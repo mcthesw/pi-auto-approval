@@ -2,7 +2,10 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 
+const STATUS_KEY = "safety-guard";
+
 const DANGEROUS_BASH_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /(^|[^\w-])rm(\s|$)/i, label: "rm" },
   { pattern: /\brm\s+-rf\b/i, label: "rm -rf" },
   { pattern: /\bsudo\b/i, label: "sudo" },
   { pattern: /\bmkfs(\.|\b)/i, label: "mkfs" },
@@ -44,8 +47,49 @@ async function confirmOrBlock(
   return undefined;
 }
 
+function updateStatus(ctx: ExtensionContext, enabled: boolean): void {
+  if (!ctx.hasUI) return;
+  if (enabled) {
+    ctx.ui.setStatus(STATUS_KEY, "");
+    return;
+  }
+  ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("success", "🔓!"));
+}
+
 export default function safetyGuard(pi: ExtensionAPI) {
+  let enabled = true;
+
+  pi.registerCommand("safety-guard", {
+    description: "Safety guard control: on | off | status",
+    handler: async (args, ctx) => {
+      const cmd = args?.trim().toLowerCase();
+      if (!cmd || cmd === "status") {
+        if (ctx.hasUI) ctx.ui.notify(`Safety guard: ${enabled ? "ON" : "OFF"}`, "info");
+        updateStatus(ctx, enabled);
+        return;
+      }
+      if (cmd === "on") {
+        enabled = true;
+        updateStatus(ctx, enabled);
+        if (ctx.hasUI) ctx.ui.notify("Safety guard enabled", "success");
+        return;
+      }
+      if (cmd === "off") {
+        enabled = false;
+        updateStatus(ctx, enabled);
+        if (ctx.hasUI) ctx.ui.notify("Safety guard disabled", "warning");
+        return;
+      }
+      if (ctx.hasUI) ctx.ui.notify("Usage: /safety-guard on|off|status", "warning");
+    },
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    updateStatus(ctx, enabled);
+  });
+
   pi.on("tool_call", async (event, ctx) => {
+    if (!enabled) return;
     if (isToolCallEventType("bash", event)) {
       const command = event.input.command ?? "";
       const match = DANGEROUS_BASH_PATTERNS.find((entry) => entry.pattern.test(command));
@@ -54,7 +98,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
       return await confirmOrBlock(
         ctx,
         "Dangerous bash command",
-        `Detected '${match.label}'. Execute anyway?`,
+        `Detected '${match.label}'.\n\nCommand:\n${command}\n\nExecute anyway?`,
         `Blocked dangerous bash command (${match.label}) in non-interactive mode`,
       );
     }
