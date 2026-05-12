@@ -35,3 +35,17 @@ None.
 ## Tools
 
 None.
+
+## Example view
+
+```text
+!rm -rf dist
+Safety guard: high-risk command detected (rm -rf)
+Allow this command?  No / Yes
+
+edit .env
+Safety guard: protected path detected (.env)
+Allow edit?  No / Yes
+```
+
+The guard adds a pause before risky shell commands or sensitive file edits, while still letting you proceed intentionally.
