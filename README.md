@@ -4,19 +4,111 @@ Interactive safety prompts for high-risk operations in Pi.
 
 ## What it does
 
-- Intercepts dangerous `bash` commands and requires confirmation.
+- Intercepts risky `bash` commands and requires confirmation.
 - Intercepts `write`/`edit` on protected paths and requires confirmation.
 - In non-interactive mode, blocks risky operations with explicit reasons.
+- Can be toggled per session with `/safety-guard on|off|status`.
+- Supports exact allow entries for the current session or permanently per cwd.
 
-Default dangerous command patterns include:
-- `rm -rf`, `sudo`, `mkfs`, `dd`
+## Guarded command categories
+
+### Git destruction / history rewriting
+
+Examples:
+
+- `git reset --hard`
+- `git reset --soft`, `git reset --mixed`, `git reset --merge`, `git reset --keep`
+- `git reset HEAD~...`, `git reset HEAD^...`, `git reset <commit>`
+- `git clean -f`, including `git clean -fd` / `git clean -xdf`
+- `git checkout -- <path>`, `git switch ...`, and `git restore ...`
+- `git branch -d/-D`, `git tag -d`
+- `git push --force`, `git push --force-with-lease`
+- `git push --delete`, `git push :refs/heads/...`
+- `git rebase`, including interactive rebases
+- `git commit --amend`, `git commit --fixup`, `git commit --squash`
+- `git filter-branch`, `git filter-repo`
+- `git replace`, `git update-ref`
+- `git notes remove`, `git notes prune`
+- `git reflog expire`, `git gc --prune`, `git prune`
+
+### Filesystem deletion / overwrite
+
+Examples:
+
+- recursive or force `rm`
+- `rm` targeting `/`, `~`, `$HOME`, `.`, or globs
+- `find ... -delete`
+- `find ... -exec rm ...`
+- `xargs ... rm`
+- `truncate -s 0`
+- `shred`
+- `dd`
+- `mkfs`, `wipefs`, `parted`, `fdisk`, `sfdisk`, `sgdisk`
+
+### Docker / Podman destruction
+
+Examples:
+
+- `docker rm`, `docker rmi`
+- `docker volume rm`, `docker volume prune`
+- `docker system prune`
+- `docker compose down -v` / `--volumes`
+- `docker-compose down -v` / `--volumes`
+- `podman rm`, `podman rmi`, `podman system prune`
+
+### Package removal
+
+Examples:
+
+- `npm uninstall/remove/rm/prune`
+- `pnpm remove/prune`
+- `yarn remove/autoclean`
+- `bun remove`
+- `pip uninstall`, `uv remove`, `cargo remove`
+- `pacman -R`, `paru -R`, `yay -R`
+- `apt remove/purge/autoremove`, `dnf remove`
+
+### System state / permissions
+
+Examples:
+
+- `sudo`
 - `shutdown`, `reboot`, `poweroff`
+- `systemctl stop/disable/mask/restart`
+- `killall`, `pkill`, `kill -9`
+- `mount`, `umount`, `swapon`, `swapoff`
+- recursive `chmod` / `chown`
+- `chmod 777`
+- `setfacl`
 - common fork-bomb signature
 
-Default protected-path patterns include:
-- `.ssh`, `.git-credentials`, `auth.json`
-- `id_rsa`, `id_ed25519` (and `.pub`)
-- `.env` and `.env.*`
+### Secret file access
+
+Examples of commands that may reveal or copy secrets are prompted when targeting sensitive files:
+
+- `cat`, `grep`, `rg`, `awk`, `sed`, `cp`
+- `.env`, `.env.*`, `.git-credentials`, `auth.json`
+- `id_rsa`, `id_ed25519`
+- `.npmrc`, `.pypirc`, `.netrc`
+- `.aws/credentials`, `.aws/config`, `.kube/config`
+- `.config/gh/hosts.yml`, `.config/gcloud/...`
+- `*.pem`, `*.key`, `*.p12`, `*.kdbx`
+
+## Protected paths
+
+`write` and `edit` prompts are triggered for sensitive paths including:
+
+- `.ssh/`
+- `.git-credentials`
+- `auth.json`
+- `id_rsa`, `id_ed25519`, and matching `.pub` files
+- `.env`, `.env.*`, `.envrc`
+- `.npmrc`, `.pypirc`, `.netrc`
+- `.kube/config`
+- `.aws/credentials`, `.aws/config`
+- `.config/gh/hosts.yml`
+- `.config/gcloud/`
+- `*.pem`, `*.key`, `*.p12`, `*.kdbx`
 
 ## Install
 
@@ -28,9 +120,38 @@ pi install npm:@firstpick/pi-extension-safety-guard
 
 No required configuration.
 
+Permanent allows are stored in:
+
+```text
+~/.pi/agent/safety-guard-allow.json
+```
+
+Allow entries are exact matches scoped to the current working directory:
+
+- bash: exact command string + cwd
+- write/edit: resolved protected path + cwd
+
+When a guard prompt appears, choose one of:
+
+- `Block`
+- `Allow once`
+- `Allow for this session`
+- `Always allow in this cwd`
+
 ## Commands
 
-None.
+```text
+/safety-guard status
+/safety-guard on
+/safety-guard off
+/safety-guard allow-list
+/safety-guard allow-clear-session
+/safety-guard allow-clear-permanent
+```
+
+When disabled, the status bar shows `🔓!`.
+
+`allow-list` shows both session and permanent entries. `allow-clear-session` clears only the in-memory list. `allow-clear-permanent` empties the persisted allow file.
 
 ## Tools
 
@@ -39,8 +160,8 @@ None.
 ## Example view
 
 ```text
-!rm -rf dist
-Safety guard: high-risk command detected (rm -rf)
+!git reset --hard
+Safety guard: high-risk git command detected
 Allow this command?  No / Yes
 
 edit .env
