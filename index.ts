@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 const STATUS_KEY = "safety-guard";
+const PROMPT_WIDGET_KEY = "safety-guard-prompt";
 
 type RiskLevel = "prompt" | "strong-confirm" | "block-noninteractive";
 type RuleCategory = "git" | "filesystem" | "docker" | "package" | "system" | "secrets";
@@ -197,18 +198,51 @@ async function confirmOrBlock(
     return { block: true, reason: nonInteractiveReason };
   }
 
-  const choice = await ctx.ui.select(`${title}\n${message}`, [
-    "Block",
-    "Allow once",
-    "Allow for this session",
-    "Always allow in this cwd",
-  ]);
+  return await new Promise<AllowDecision>((resolveDecision) => {
+    let settled = false;
+    let unsubscribe: (() => void) | undefined;
 
-  if (choice === "Allow once") return { allow: true };
-  if (choice === "Allow for this session") return { allow: true, scope: "session" };
-  if (choice === "Always allow in this cwd") return { allow: true, scope: "permanent" };
+    const finish = (decision: AllowDecision) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe?.();
+      ctx.ui.setWidget(PROMPT_WIDGET_KEY, undefined);
+      resolveDecision(decision);
+    };
 
-  return { block: true, reason: "Blocked by safety-guard extension" };
+    const lines = [
+      ctx.ui.theme.fg("warning", `⚠ ${title}`),
+      ...message.split(/\r?\n/),
+      "",
+      ctx.ui.theme.fg("dim", "Safety prompt is non-modal: scroll/select terminal text, then press a key below."),
+      `${ctx.ui.theme.fg("accent", "o")} allow once  ${ctx.ui.theme.fg("accent", "s")} allow session  ${ctx.ui.theme.fg("accent", "a")} always in cwd  ${ctx.ui.theme.fg("accent", "b")} block  ${ctx.ui.theme.fg("accent", "Esc")} block`,
+    ];
+
+    ctx.ui.setWidget(PROMPT_WIDGET_KEY, lines, { placement: "belowEditor" });
+
+    unsubscribe = ctx.ui.onTerminalInput((data) => {
+      if (data === "o" || data === "O" || data === "1") {
+        finish({ allow: true });
+        return { consume: true };
+      }
+      if (data === "s" || data === "S" || data === "2") {
+        finish({ allow: true, scope: "session" });
+        return { consume: true };
+      }
+      if (data === "a" || data === "A" || data === "3") {
+        finish({ allow: true, scope: "permanent" });
+        return { consume: true };
+      }
+      if (data === "b" || data === "B" || data === "4" || data === "\u001b" || data === "\u0003") {
+        finish({ block: true, reason: "Blocked by safety-guard extension" });
+        return { consume: true };
+      }
+
+      // Let normal Pi/TUI handlers see everything else so the user can scroll,
+      // page around, and use terminal text selection before answering.
+      return undefined;
+    });
+  });
 }
 
 function formatRuleMessage(rule: CommandRule, command: string): { title: string; message: string; nonInteractiveReason: string } {
