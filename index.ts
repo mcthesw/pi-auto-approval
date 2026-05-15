@@ -214,35 +214,57 @@ async function confirmOrBlock(
       ctx.ui.theme.fg("warning", `⚠ ${title}`),
       ...message.split(/\r?\n/),
       "",
-      ctx.ui.theme.fg("dim", "Safety prompt is non-modal: scroll/select terminal text, then press a key below."),
-      `${ctx.ui.theme.fg("accent", "o")} allow once  ${ctx.ui.theme.fg("accent", "s")} allow session  ${ctx.ui.theme.fg("accent", "a")} always in cwd  ${ctx.ui.theme.fg("accent", "b")} block  ${ctx.ui.theme.fg("accent", "Esc")} block`,
+      "Choose an option from the safety prompt dialog.",
     ];
 
-    ctx.ui.setWidget(PROMPT_WIDGET_KEY, lines, { placement: "belowEditor" });
+    ctx.ui.setWidget(PROMPT_WIDGET_KEY, lines, { placement: "aboveEditor" });
 
-    unsubscribe = ctx.ui.onTerminalInput((data) => {
-      if (data === "o" || data === "O" || data === "1") {
-        finish({ allow: true });
-        return { consume: true };
+    void ctx.ui.select(title, [
+      "Block",
+      "Allow once",
+      "Allow for this session",
+      "Always allow in this cwd",
+    ]).then((choice) => {
+      switch (choice) {
+        case "Allow once":
+          finish({ allow: true });
+          break;
+        case "Allow for this session":
+          finish({ allow: true, scope: "session" });
+          break;
+        case "Always allow in this cwd":
+          finish({ allow: true, scope: "permanent" });
+          break;
+        default:
+          finish({ block: true, reason: "Blocked by safety-guard extension" });
+          break;
       }
-      if (data === "s" || data === "S" || data === "2") {
-        finish({ allow: true, scope: "session" });
-        return { consume: true };
-      }
-      if (data === "a" || data === "A" || data === "3") {
-        finish({ allow: true, scope: "permanent" });
-        return { consume: true };
-      }
-      if (data === "b" || data === "B" || data === "4" || data === "\u001b" || data === "\u0003") {
-        finish({ block: true, reason: "Blocked by safety-guard extension" });
-        return { consume: true };
-      }
-
-      // Let normal Pi/TUI handlers see everything else so the user can scroll,
-      // page around, and use terminal text selection before answering.
-      return undefined;
-    });
+    }).catch(() => finish({ block: true, reason: "Blocked by safety-guard extension" }));
   });
+}
+
+function stripHeredocBodies(command: string): string {
+  const lines = command.split(/\r?\n/);
+  const kept: string[] = [];
+  let terminator: string | undefined;
+
+  for (const line of lines) {
+    if (terminator) {
+      if (line.trim() === terminator) terminator = undefined;
+      continue;
+    }
+
+    kept.push(line);
+    const match = line.match(/<<-?\s*(?:['"]?)([A-Za-z_][A-Za-z0-9_]*)(?:['"]?)/);
+    if (match) terminator = match[1];
+  }
+
+  return kept.join("\n");
+}
+
+function previewCommand(command: string, maxChars = 1600): string {
+  if (command.length <= maxChars) return command;
+  return `${command.slice(0, maxChars)}\n… [truncated ${command.length - maxChars} chars for prompt display]`;
 }
 
 function formatRuleMessage(rule: CommandRule, command: string): { title: string; message: string; nonInteractiveReason: string } {
@@ -253,7 +275,7 @@ function formatRuleMessage(rule: CommandRule, command: string): { title: string;
 
   return {
     title,
-    message: `Detected '${rule.label}' (${rule.category}).\n${impact}\n\nCommand:\n${command}\n\nExecute anyway?`,
+    message: `Detected '${rule.label}' (${rule.category}).\n${impact}\n\nCommand:\n${previewCommand(command)}\n\nExecute anyway?`,
     nonInteractiveReason: `Blocked ${rule.category} command (${rule.label}) in non-interactive mode`,
   };
 }
@@ -344,7 +366,8 @@ export default function safetyGuard(pi: ExtensionAPI) {
     if (!enabled) return;
     if (isToolCallEventType("bash", event)) {
       const command = event.input.command ?? "";
-      const match = DANGEROUS_BASH_RULES.find((entry) => entry.pattern.test(command));
+      const commandForMatching = stripHeredocBodies(command);
+      const match = DANGEROUS_BASH_RULES.find((entry) => entry.pattern.test(commandForMatching));
       if (!match) return;
 
       const entry = {
