@@ -262,20 +262,45 @@ function stripHeredocBodies(command: string): string {
   return kept.join("\n");
 }
 
-function previewCommand(command: string, maxChars = 1600): string {
+function previewCommand(command: string, maxChars = 800): string {
   if (command.length <= maxChars) return command;
   return `${command.slice(0, maxChars)}\n… [truncated ${command.length - maxChars} chars for prompt display]`;
 }
 
-function formatRuleMessage(rule: CommandRule, command: string): { title: string; message: string; nonInteractiveReason: string } {
+function matchingCommandExcerpt(rule: CommandRule, commandForMatching: string): string {
+  const lines = commandForMatching.split(/\r?\n/);
+  const matchedIndexes = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => rule.pattern.test(line))
+    .map(({ index }) => index);
+
+  if (matchedIndexes.length === 0) return previewCommand(commandForMatching.trim() || commandForMatching, 800);
+
+  const excerptLines: string[] = [];
+  const included = new Set<number>();
+  for (const index of matchedIndexes.slice(0, 3)) {
+    for (let offset = -1; offset <= 1; offset += 1) {
+      const lineIndex = index + offset;
+      if (lineIndex < 0 || lineIndex >= lines.length || included.has(lineIndex)) continue;
+      included.add(lineIndex);
+      excerptLines.push(lines[lineIndex]);
+    }
+  }
+
+  if (matchedIndexes.length > 3) excerptLines.push(`… ${matchedIndexes.length - 3} more matching lines omitted`);
+  return previewCommand(excerptLines.join("\n"), 800);
+}
+
+function formatRuleMessage(rule: CommandRule, commandForMatching: string): { title: string; message: string; nonInteractiveReason: string } {
   const title = rule.level === "strong-confirm" ? "High-risk bash command" : "Dangerous bash command";
   const impact = rule.level === "strong-confirm"
     ? "This can be difficult to undo. Verify the target, branch, and scope before allowing."
     : "Verify the target and scope before allowing.";
+  const excerpt = matchingCommandExcerpt(rule, commandForMatching);
 
   return {
     title,
-    message: `Detected '${rule.label}' (${rule.category}).\n${impact}\n\nCommand:\n${previewCommand(command)}\n\nExecute anyway?`,
+    message: `Detected '${rule.label}' (${rule.category}).\n${impact}\n\nMatched command excerpt:\n${excerpt}\n\nExecute anyway?`,
     nonInteractiveReason: `Blocked ${rule.category} command (${rule.label}) in non-interactive mode`,
   };
 }
@@ -380,7 +405,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
       };
       if (isAllowed(entry.key)) return;
 
-      const prompt = formatRuleMessage(match, command);
+      const prompt = formatRuleMessage(match, commandForMatching);
       const decision = await confirmOrBlock(ctx, prompt.title, prompt.message, prompt.nonInteractiveReason);
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);
