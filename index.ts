@@ -210,16 +210,13 @@ async function confirmOrBlock(
       resolveDecision(decision);
     };
 
-    const lines = [
+    const promptTitle = [
       ctx.ui.theme.fg("warning", `⚠ ${title}`),
-      ...message.split(/\r?\n/),
       "",
-      "Choose an option from the safety prompt dialog.",
-    ];
+      message,
+    ].join("\n");
 
-    ctx.ui.setWidget(PROMPT_WIDGET_KEY, lines, { placement: "aboveEditor" });
-
-    void ctx.ui.select(title, [
+    void ctx.ui.select(promptTitle, [
       "Block",
       "Allow once",
       "Allow for this session",
@@ -267,40 +264,91 @@ function previewCommand(command: string, maxChars = 800): string {
   return `${command.slice(0, maxChars)}\n… [truncated ${command.length - maxChars} chars for prompt display]`;
 }
 
-function matchingCommandExcerpt(rule: CommandRule, commandForMatching: string): string {
+function highlightMatchedPattern(
+  rule: CommandRule,
+  line: string,
+  highlight: (value: string) => string,
+): string {
+  rule.pattern.lastIndex = 0;
+  const match = rule.pattern.exec(line);
+  rule.pattern.lastIndex = 0;
+  if (!match || match.index === undefined || match[0].length === 0) return line;
+
+  const start = match.index;
+  const end = start + match[0].length;
+  return `${line.slice(0, start)}${highlight(`>>> ${match[0]} <<<`)}${line.slice(end)}`;
+}
+
+function matchingCommandExcerpt(
+  rule: CommandRule,
+  commandForMatching: string,
+  highlight: (value: string) => string = (value) => value,
+): string {
   const lines = commandForMatching.split(/\r?\n/);
   const matchedIndexes = lines
     .map((line, index) => ({ line, index }))
-    .filter(({ line }) => rule.pattern.test(line))
+    .filter(({ line }) => {
+      rule.pattern.lastIndex = 0;
+      const matched = rule.pattern.test(line);
+      rule.pattern.lastIndex = 0;
+      return matched;
+    })
     .map(({ index }) => index);
 
-  if (matchedIndexes.length === 0) return previewCommand(commandForMatching.trim() || commandForMatching, 800);
+  if (matchedIndexes.length === 0) {
+    return previewCommand(commandForMatching.trim() || commandForMatching, 800);
+  }
 
-  const excerptLines: string[] = [];
+  const matchedSet = new Set(matchedIndexes);
   const included = new Set<number>();
   for (const index of matchedIndexes.slice(0, 3)) {
     for (let offset = -1; offset <= 1; offset += 1) {
       const lineIndex = index + offset;
-      if (lineIndex < 0 || lineIndex >= lines.length || included.has(lineIndex)) continue;
+      if (lineIndex < 0 || lineIndex >= lines.length) continue;
       included.add(lineIndex);
-      excerptLines.push(lines[lineIndex]);
     }
   }
 
+  const lineNumberWidth = String(lines.length).length;
+  const excerptLines = [...included]
+    .sort((a, b) => a - b)
+    .map((lineIndex) => {
+      const isMatchedLine = matchedSet.has(lineIndex);
+      const marker = isMatchedLine ? highlight("!!!") : "   ";
+      const lineNumber = String(lineIndex + 1).padStart(lineNumberWidth, " ");
+      const line = isMatchedLine ? highlightMatchedPattern(rule, lines[lineIndex], highlight) : lines[lineIndex];
+      return `${marker} ${lineNumber} | ${line}`;
+    });
+
   if (matchedIndexes.length > 3) excerptLines.push(`… ${matchedIndexes.length - 3} more matching lines omitted`);
-  return previewCommand(excerptLines.join("\n"), 800);
+  return previewCommand(excerptLines.join("\n"), 1000);
 }
 
-function formatRuleMessage(rule: CommandRule, commandForMatching: string): { title: string; message: string; nonInteractiveReason: string } {
+function formatRuleMessage(
+  rule: CommandRule,
+  commandForMatching: string,
+  highlight: (value: string) => string = (value) => value,
+): { title: string; message: string; nonInteractiveReason: string } {
   const title = rule.level === "strong-confirm" ? "High-risk bash command" : "Dangerous bash command";
   const impact = rule.level === "strong-confirm"
     ? "This can be difficult to undo. Verify the target, branch, and scope before allowing."
     : "Verify the target and scope before allowing.";
-  const excerpt = matchingCommandExcerpt(rule, commandForMatching);
+  const excerpt = matchingCommandExcerpt(rule, commandForMatching, highlight);
 
   return {
     title,
-    message: `Detected '${rule.label}' (${rule.category}).\n${impact}\n\nMatched command excerpt:\n${excerpt}\n\nExecute anyway?`,
+    message: [
+      `Reason: ${highlight(rule.label)} (${rule.category})`,
+      impact,
+      "",
+      "DANGEROUS LINE(S) AND CONTEXT",
+      `Lines marked with ${highlight("!!!")} triggered the safety rule; the matched pattern is wrapped as ${highlight(">>> pattern <<<")}.`,
+      "────────────────────────────────────────",
+      excerpt,
+      "────────────────────────────────────────",
+      "",
+      "Execute anyway?",
+    ].join("\n"),
     nonInteractiveReason: `Blocked ${rule.category} command (${rule.label}) in non-interactive mode`,
   };
 }
@@ -405,7 +453,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
       };
       if (isAllowed(entry.key)) return;
 
-      const prompt = formatRuleMessage(match, commandForMatching);
+      const prompt = formatRuleMessage(match, commandForMatching, (value) => ctx.ui.theme.fg("warning", value));
       const decision = await confirmOrBlock(ctx, prompt.title, prompt.message, prompt.nonInteractiveReason);
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);
