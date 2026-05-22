@@ -8,7 +8,7 @@ const STATUS_KEY = "safety-guard";
 const PROMPT_WIDGET_KEY = "safety-guard-prompt";
 
 type RiskLevel = "prompt" | "strong-confirm" | "block-noninteractive";
-type RuleCategory = "git" | "filesystem" | "docker" | "package" | "system" | "secrets";
+type RuleCategory = "git" | "filesystem" | "docker" | "package" | "system" | "database" | "secrets";
 
 type CommandRule = {
   pattern: RegExp;
@@ -101,6 +101,16 @@ const SYSTEM_RULES: CommandRule[] = [
   { pattern: /\bchmod\b[^\n;&|]*\s777\b/i, label: "chmod 777", category: "system", level: "prompt" },
   { pattern: /\bsetfacl\b/i, label: "ACL change", category: "system", level: "prompt" },
   { pattern: /:\(\)\s*\{/i, label: "fork bomb", category: "system", level: "block-noninteractive" },
+];
+
+const DATABASE_RULES: CommandRule[] = [
+  { pattern: /\bDROP\s+(?:DATABASE|SCHEMA)\b/i, label: "SQL drop database/schema", category: "database", level: "block-noninteractive" },
+  { pattern: /\bDROP\s+TABLE\b/i, label: "SQL drop table", category: "database", level: "strong-confirm" },
+  { pattern: /\bDROP\s+INDEX\b/i, label: "SQL drop index", category: "database", level: "strong-confirm" },
+  { pattern: /\bTRUNCATE\s+(?:TABLE\s+)?[\w.`\"\[\]-]+/i, label: "SQL truncate table", category: "database", level: "strong-confirm" },
+  { pattern: /\bDELETE\s+FROM\b(?:(?!\bWHERE\b|;)[\s\S])*(?:;|$)/i, label: "SQL delete without WHERE", category: "database", level: "strong-confirm" },
+  { pattern: /\bUPDATE\s+[\w.`\"\[\]-]+\s+SET\b(?:(?!\bWHERE\b|;)[\s\S])*(?:;|$)/i, label: "SQL update without WHERE", category: "database", level: "strong-confirm" },
+  { pattern: /\bALTER\s+TABLE\b[\s\S]*\bDROP\s+(?:COLUMN|CONSTRAINT)\b/i, label: "SQL alter table drop", category: "database", level: "strong-confirm" },
 ];
 
 const SECRET_EXPOSURE_RULES: CommandRule[] = [
@@ -440,7 +450,10 @@ export default function safetyGuard(pi: ExtensionAPI) {
     if (isToolCallEventType("bash", event)) {
       const command = event.input.command ?? "";
       const commandForMatching = stripHeredocBodies(command);
-      const match = DANGEROUS_BASH_RULES.find((entry) => entry.pattern.test(commandForMatching));
+      const shellMatch = DANGEROUS_BASH_RULES.find((entry) => entry.pattern.test(commandForMatching));
+      const databaseMatch = DATABASE_RULES.find((entry) => entry.pattern.test(command));
+      const match = shellMatch ?? databaseMatch;
+      const matchedCommandText = databaseMatch && !shellMatch ? command : commandForMatching;
       if (!match) return;
 
       const entry = {
@@ -453,7 +466,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
       };
       if (isAllowed(entry.key)) return;
 
-      const prompt = formatRuleMessage(match, commandForMatching, (value) => ctx.ui.theme.fg("warning", value));
+      const prompt = formatRuleMessage(match, matchedCommandText, (value) => ctx.ui.theme.fg("warning", value));
       const decision = await confirmOrBlock(ctx, prompt.title, prompt.message, prompt.nonInteractiveReason);
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);

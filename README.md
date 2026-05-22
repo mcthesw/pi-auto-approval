@@ -82,6 +82,19 @@ Examples:
 - `setfacl`
 - common fork-bomb signature
 
+### Dangerous SQL
+
+Examples:
+
+- `DROP DATABASE`, `DROP SCHEMA`
+- `DROP TABLE`, `DROP INDEX`
+- `TRUNCATE` / `TRUNCATE TABLE`
+- `DELETE FROM ...` without `WHERE`
+- `UPDATE ... SET ...` without `WHERE`
+- `ALTER TABLE ... DROP COLUMN/CONSTRAINT`
+
+SQL rules are matched against the full bash command, including heredoc bodies, so database client calls like `psql <<SQL ... SQL` can still be guarded.
+
 ### Secret file access
 
 Examples of commands that may reveal or copy secrets are prompted when targeting sensitive files:
