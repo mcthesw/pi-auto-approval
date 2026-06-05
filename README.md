@@ -2,7 +2,7 @@
 
 Interactive safety prompts for high-risk operations in Pi.
 
-![Safety guard confirmation prompt](images/safety_guard_v0.1.9.png)
+![Safety guard confirmation prompt](https://unpkg.com/@firstpick/pi-extension-safety-guard/images/safety_guard_v0.1.9.png)
 
 ## What it does
 
