@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-safety-guard",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Interactive guardrails for dangerous bash commands and protected file edits in Pi.",
   "license": "MIT",
   "keywords": [
@@ -10,6 +10,7 @@
     "extension"
   ],
   "pi": {
+    "image": "https://unpkg.com/@firstpick/pi-extension-safety-guard/images/safety_guard_v0.1.9.png",
     "extensions": [
       "./index.ts"
     ]
@@ -19,6 +20,7 @@
   },
   "files": [
     "index.ts",
+    "images",
     "README.md",
     "LICENSE"
   ]
