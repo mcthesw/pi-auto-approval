@@ -3,6 +3,11 @@
   "version": "0.2.1",
   "description": "Interactive guardrails for dangerous bash commands and protected file edits in Pi.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-extension-safety-guard"
+  },
   "keywords": [
     "pi-package",
     "pi",
