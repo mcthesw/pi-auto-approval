@@ -97,13 +97,13 @@ export function parseToolMatcher(value: unknown, at = "matcher"): ToolMatcher {
   return matcher;
 }
 
-function parseApprovalRule(value: unknown, at: string): ApprovalRule {
+export function parseApprovalRule(value: unknown, at = "approvalRule"): ApprovalRule {
   const input = record(value, at);
   exactKeys(input, ["id", "matcher"], at);
   return { id: nonEmptyString(input.id, `${at}.id`), matcher: parseToolMatcher(input.matcher, `${at}.matcher`) };
 }
 
-function parsePolicyRule(value: unknown, at: string): PolicyRule {
+export function parsePolicyRule(value: unknown, at = "policyRule"): PolicyRule {
   const input = record(value, at);
   exactKeys(input, ["id", "matcher", "route"], at);
   if (!ROUTES.has(input.route as DecisionRoute)) fail(`${at}.route`, "expected approve, deny, ask_user, or auto_review");

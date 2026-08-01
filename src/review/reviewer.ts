@@ -63,9 +63,12 @@ export type ReviewSession = {
   dispose(): void;
 };
 
+export type ReviewerModelOption = { provider: string; modelId: string; label: string };
+
 export type ReviewSessionFactory = {
   create(config: ReviewerConfig, cwd: string): Promise<ReviewSession>;
   availability(config: ReviewerConfig): Promise<string | undefined>;
+  availableModels?(): Promise<ReviewerModelOption[]>;
 };
 
 function modelMatches(model: Model<any>, config: ReviewerConfig): boolean {
@@ -87,6 +90,15 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
       modelsPath: path.join(agentDir, "models.json"),
     });
     return new PiReviewSessionFactory(runtime, agentDir);
+  }
+
+  async availableModels(): Promise<ReviewerModelOption[]> {
+    const models = await this.runtime.getAvailable();
+    return models.map((model) => ({
+      provider: model.provider,
+      modelId: model.id,
+      label: `${model.name} (${model.provider}/${model.id})`,
+    }));
   }
 
   async availability(config: ReviewerConfig): Promise<string | undefined> {
@@ -190,6 +202,10 @@ export class AutomatedReviewer {
 
   availability(config: ReviewerConfig): Promise<string | undefined> {
     return this.sessions.availability(config);
+  }
+
+  availableModels(): Promise<ReviewerModelOption[]> {
+    return this.sessions.availableModels?.() ?? Promise.resolve([]);
   }
 
   async review(config: ReviewerConfig, request: ReviewRequest, signal?: AbortSignal): Promise<ReviewResult> {
