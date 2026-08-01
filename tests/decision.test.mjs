@@ -91,6 +91,35 @@ test("Always approve validates and persists a project Approval Rule", async () =
   });
 });
 
+test("a mismatched Reviewer proposal is replaced by the exact current call matcher", async () => {
+  await withDecision(async ({ directory, project, store }) => {
+    await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
+    const reviewer = {
+      review: async () => ({
+        decision: "ask_user",
+        reason: "confirm scope",
+        approvalRuleProposal: { tool: "custom", input: { kind: "exact", value: { action: "other" } } },
+      }),
+    };
+    const ctx = context({
+      cwd: directory,
+      hasUI: true,
+      mode: "rpc",
+      select: async () => "Always approve with rule",
+      editor: async (_title, source) => source,
+    });
+    assert.equal(await decideToolCall(ctx, call, dependencies(project, store, reviewer)), undefined);
+    const loaded = await store.read();
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) {
+      assert.deepEqual(loaded.config.projects[project.key].approvalRules[0].matcher, {
+        tool: "custom",
+        input: { kind: "exact", value: { action: "run" } },
+      });
+    }
+  });
+});
+
 test("Reviewer failure asks with UI and denies without UI", async () => {
   await withDecision(async ({ directory, project, store }) => {
     await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });

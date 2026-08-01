@@ -49,7 +49,7 @@ The Reviewer receives untrusted evidence, not instructions:
 - cwd and project root;
 - limited metadata for the current tool.
 
-Every review uses a fresh in-memory session with no tools or project resources. Reviewer conversation state is not reused. The fixed policy cannot be replaced through project content or configuration.
+Every review uses a fresh in-memory session with no tools or project resources. Its operational cwd is the filesystem root because Pi appends that value to custom system prompts; the real project cwd is supplied only as untrusted evidence. Reviewer conversation state is not reused. The fixed policy cannot be replaced through project content or configuration.
 
 Model judgment can be wrong. A Reviewer Approval permits only the current Tool Call. A proposed persistent matcher remains inactive until the user accepts it in User Confirmation.
 

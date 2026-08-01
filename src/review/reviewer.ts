@@ -93,6 +93,7 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
   }
 
   async availableModels(): Promise<ReviewerModelOption[]> {
+    await this.runtime.refresh({ allowNetwork: false });
     const models = await this.runtime.getAvailable();
     return models.map((model) => ({
       provider: model.provider,
@@ -102,6 +103,9 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
   }
 
   async availability(config: ReviewerConfig): Promise<string | undefined> {
+    // Reload auth.json and models.json so a long-running Pi process observes
+    // explicit credential or model changes without retaining Reviewer history.
+    await this.runtime.refresh({ allowNetwork: false });
     const model = this.runtime.getModel(config.provider, config.modelId);
     if (!model) return `Reviewer model not found: ${config.provider}/${config.modelId}`;
     const available = await this.runtime.getAvailable();
@@ -111,7 +115,7 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
     return undefined;
   }
 
-  async create(config: ReviewerConfig, cwd: string): Promise<ReviewSession> {
+  async create(config: ReviewerConfig, _cwd: string): Promise<ReviewSession> {
     const unavailable = await this.availability(config);
     if (unavailable) throw new ReviewUnavailableError(unavailable);
     const model = this.runtime.getModel(config.provider, config.modelId);
@@ -119,7 +123,10 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
     const resourceLoader = new InertReviewResourceLoader();
     await resourceLoader.reload();
     const { session } = await createAgentSession({
-      cwd,
+      // Pi appends the session cwd to custom system prompts. Use only the
+      // filesystem root here so an untrusted project path cannot add system-level text.
+      // The actual cwd is supplied separately as explicitly untrusted evidence.
+      cwd: inertReviewSessionCwd(this.agentDir),
       agentDir: this.agentDir,
       modelRuntime: this.runtime,
       model,
@@ -137,18 +144,34 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
   }
 }
 
-function assistantText(messages: readonly unknown[]): string | undefined {
+export function inertReviewSessionCwd(agentDir: string): string {
+  return path.parse(path.resolve(agentDir)).root;
+}
+
+type AssistantOutcome = {
+  text?: string;
+  stopReason?: string;
+  errorMessage?: string;
+};
+
+function assistantOutcome(messages: readonly unknown[]): AssistantOutcome | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (typeof message !== "object" || message === null || (message as Record<string, unknown>).role !== "assistant") continue;
-    const content = (message as Record<string, unknown>).content;
-    if (!Array.isArray(content)) continue;
-    const text = content
-      .filter((part) => typeof part === "object" && part !== null && (part as Record<string, unknown>).type === "text")
-      .map((part) => (part as Record<string, unknown>).text)
-      .filter((value): value is string => typeof value === "string")
-      .join("\n");
-    if (text.trim()) return text;
+    const input = message as Record<string, unknown>;
+    const content = input.content;
+    const text = Array.isArray(content)
+      ? content
+        .filter((part) => typeof part === "object" && part !== null && (part as Record<string, unknown>).type === "text")
+        .map((part) => (part as Record<string, unknown>).text)
+        .filter((value): value is string => typeof value === "string")
+        .join("\n")
+      : undefined;
+    return {
+      ...(text?.trim() ? { text } : {}),
+      ...(typeof input.stopReason === "string" ? { stopReason: input.stopReason } : {}),
+      ...(typeof input.errorMessage === "string" ? { errorMessage: input.errorMessage } : {}),
+    };
   }
   return undefined;
 }
@@ -213,14 +236,20 @@ export class AutomatedReviewer {
     const context = prepareReviewContext(request);
     const controller = new AbortController();
     let session: ReviewSession | undefined;
+    let abortPromise: Promise<void> | undefined;
     let timedOut = false;
     let cancelled = false;
     const onCallerAbort = () => {
       cancelled = true;
       controller.abort();
     };
+    const abortSession = (): Promise<void> => {
+      if (!session) return Promise.resolve();
+      abortPromise ??= session.abort().catch(() => {});
+      return abortPromise;
+    };
     const onReviewAbort = () => {
-      if (session) void session.abort().catch(() => {});
+      void abortSession();
     };
     signal?.addEventListener("abort", onCallerAbort, { once: true });
     controller.signal.addEventListener("abort", onReviewAbort, { once: true });
@@ -234,9 +263,14 @@ export class AutomatedReviewer {
       await session.prompt(buildReviewPrompt(context), { expandPromptTemplates: false });
       if (cancelled) throw abortError();
       if (timedOut) throw new ReviewUnavailableError(`Automated Review timed out after ${this.timeoutMs} ms`);
-      const response = assistantText(session.messages);
-      if (!response) throw new ReviewUnavailableError("Reviewer returned no assistant text");
-      return parseReviewResponse(response);
+      const outcome = assistantOutcome(session.messages);
+      if (!outcome) throw new ReviewUnavailableError("Reviewer returned no assistant message");
+      if (outcome.stopReason !== "stop") {
+        const detail = outcome.errorMessage ? `: ${outcome.errorMessage}` : "";
+        throw new ReviewUnavailableError(`Reviewer stopped with ${outcome.stopReason ?? "an unknown reason"}${detail}`);
+      }
+      if (!outcome.text) throw new ReviewUnavailableError("Reviewer returned no assistant text");
+      return parseReviewResponse(outcome.text);
     } catch (error) {
       if (cancelled || signal?.aborted) throw abortError();
       if (timedOut) throw new ReviewUnavailableError(`Automated Review timed out after ${this.timeoutMs} ms`);
@@ -246,6 +280,7 @@ export class AutomatedReviewer {
       clearTimeout(timeout);
       signal?.removeEventListener("abort", onCallerAbort);
       controller.signal.removeEventListener("abort", onReviewAbort);
+      if (controller.signal.aborted) await abortSession();
       session?.dispose();
     }
   }
