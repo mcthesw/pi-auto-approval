@@ -1,22 +1,21 @@
 {
-  "name": "@firstpick/pi-extension-safety-guard",
-  "version": "0.2.6",
-  "description": "Interactive guardrails for dangerous bash commands and protected file edits in Pi.",
+  "name": "@mcthesw/pi-extension-auto-approval",
+  "version": "0.1.0",
+  "description": "Work-in-progress Pi extension targeting deterministic tool approval and isolated model review.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-safety-guard#readme",
+  "homepage": "https://github.com/mcthesw/pi-extension-auto-approval#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
-    "directory": "pi-extension-safety-guard"
+    "url": "git+https://github.com/mcthesw/pi-extension-auto-approval.git"
   },
   "keywords": [
     "pi-package",
     "pi",
     "pi-coding-agent",
-    "extension"
+    "extension",
+    "approval"
   ],
   "pi": {
-    "image": "https://unpkg.com/@firstpick/pi-extension-safety-guard/images/safety_guard_v0.1.9.png",
     "extensions": [
       "./index.ts"
     ]
@@ -31,7 +30,6 @@
   "files": [
     "index.ts",
     "src",
-    "images",
     "README.md",
     "LICENSE"
   ]
