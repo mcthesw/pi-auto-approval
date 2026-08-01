@@ -1,0 +1,8 @@
+# Keep Git installs isolated when Pi's agent directory is itself a pnpm workspace.
+packages: []
+
+# Pi runs the configured package manager without --prod for Git packages.
+# These transitive SDK build scripts are unnecessary for this extension.
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false
