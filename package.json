@@ -2,7 +2,7 @@
   "name": "@mcthesw/pi-extension-auto-approval",
   "version": "0.1.0",
   "type": "module",
-  "description": "Work-in-progress Pi extension targeting deterministic tool approval and isolated model review.",
+  "description": "Pi extension for deterministic tool approval and isolated model review.",
   "license": "MIT",
   "homepage": "https://github.com/mcthesw/pi-extension-auto-approval#readme",
   "repository": {
@@ -52,6 +52,8 @@
     "index.ts",
     "src",
     "README.md",
+    "CONTEXT.md",
+    "docs",
     "LICENSE"
   ]
 }
