@@ -1,6 +1,7 @@
 {
   "name": "@mcthesw/pi-extension-auto-approval",
   "version": "0.1.0",
+  "type": "module",
   "description": "Work-in-progress Pi extension targeting deterministic tool approval and isolated model review.",
   "license": "MIT",
   "homepage": "https://github.com/mcthesw/pi-extension-auto-approval#readme",
@@ -21,12 +22,30 @@
     ]
   },
   "scripts": {
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mjs"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "minimatch": "^10.2.6"
   },
   "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.83.0",
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-tui": "0.83.0",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "pnpm@11.1.2",
   "files": [
     "index.ts",
     "src",
