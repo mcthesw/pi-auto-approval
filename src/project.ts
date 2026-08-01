@@ -16,8 +16,7 @@ export type ResolvedProjectPath = {
 };
 
 function comparisonPath(value: string): string {
-  const normalized = path.normalize(value);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return path.normalize(value);
 }
 
 function toPosix(value: string): string {
@@ -81,10 +80,11 @@ export async function resolveProjectPath(
   const normalizedRoot = path.normalize(projectRoot);
   const normalizedCanonical = path.normalize(canonical);
   const relativeNative = path.relative(normalizedRoot, normalizedCanonical);
-  const comparableRelative = path.relative(comparisonPath(normalizedRoot), comparisonPath(normalizedCanonical));
-  const inside =
-    !path.isAbsolute(comparableRelative) &&
-    (comparableRelative === "" || (!comparableRelative.startsWith(`..${path.sep}`) && comparableRelative !== ".."));
+  const rootPrefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : `${normalizedRoot}${path.sep}`;
+  // Both values were canonicalized through realpath, so an exact prefix check
+  // preserves case-sensitive Windows directory semantics while also rejecting
+  // cross-volume and UNC escapes.
+  const inside = normalizedCanonical === normalizedRoot || normalizedCanonical.startsWith(rootPrefix);
 
   return {
     absolute,

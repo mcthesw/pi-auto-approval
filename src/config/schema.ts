@@ -146,7 +146,6 @@ export function parseAutoApprovalConfig(value: unknown): AutoApprovalConfig {
   for (const [key, project] of Object.entries(projectsInput)) {
     if (!key.trim()) fail("config.projects", "project key must not be empty");
     if (!path.isAbsolute(key) || path.normalize(key) !== key) fail(`config.projects[${JSON.stringify(key)}]`, "project key must be a normalized absolute path");
-    if (process.platform === "win32" && key !== key.toLowerCase()) fail(`config.projects[${JSON.stringify(key)}]`, "Windows project keys must use canonical lowercase form");
     Object.defineProperty(projects, key, {
       value: parseProject(project, `config.projects[${JSON.stringify(key)}]`),
       enumerable: true,

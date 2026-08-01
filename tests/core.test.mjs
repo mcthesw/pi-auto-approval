@@ -60,7 +60,7 @@ test("config store serializes concurrent read-modify-write updates", async () =>
       Array.from({ length: 12 }, (_, index) =>
         store.update((config) => {
           const key = path.resolve(directory, `project-${index}`);
-          config.projects[process.platform === "win32" ? key.toLowerCase() : key] = { policyRules: [], approvalRules: [] };
+          config.projects[key] = { policyRules: [], approvalRules: [] };
         }),
       ),
     );
@@ -88,6 +88,11 @@ test("project identity uses the canonical Git root and non-Git cwd fallback", as
     assert.equal(gitProject.root, await resolveProjectIdentity(directory).then((value) => value.root));
     const nonGit = await resolveProjectIdentity(child, async () => undefined);
     assert.equal(nonGit.root, await resolveProjectIdentity(child).then((value) => value.root));
+    const mixedCase = path.join(directory, "MixedCaseProject");
+    await mkdir(mixedCase);
+    const mixedIdentity = await resolveProjectIdentity(mixedCase);
+    assert.equal(mixedIdentity.key, path.normalize(mixedIdentity.root));
+    assert.equal(path.basename(mixedIdentity.key), "MixedCaseProject");
   });
 });
 
