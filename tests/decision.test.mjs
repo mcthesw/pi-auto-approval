@@ -69,6 +69,33 @@ test("Automated Review approve and deny decisions are final", async () => {
   });
 });
 
+test("interactive sessions show every Automated Review decision", async () => {
+  await withDecision(async ({ directory, project, store }) => {
+    await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
+    const notifications = [];
+    const ctx = context({
+      cwd: directory,
+      hasUI: true,
+      mode: "rpc",
+      notify: (message, level) => notifications.push({ message, level }),
+      select: async () => "Approve once",
+    });
+    for (const [decision, reason] of [
+      ["approve", "safe\noperation"],
+      ["deny", "unsafe"],
+      ["ask_user", "intent unclear"],
+    ]) {
+      const reviewer = { review: async () => ({ decision, reason }) };
+      await decideToolCall(ctx, call, dependencies(project, store, reviewer));
+    }
+    assert.deepEqual(notifications, [
+      { message: "Auto Review APPROVE · custom: safe operation", level: "info" },
+      { message: "Auto Review DENY · custom: unsafe", level: "error" },
+      { message: "Auto Review ASK_USER · custom: intent unclear", level: "warning" },
+    ]);
+  });
+});
+
 test("Always approve validates and persists a project Approval Rule", async () => {
   await withDecision(async ({ directory, project, store }) => {
     await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });

@@ -12,6 +12,19 @@ import type { ReviewToolMetadata } from "./review/context.ts";
 
 export type ToolDecision = { block: true; reason: string } | undefined;
 
+const REVIEW_NOTICE_LIMIT = 300;
+
+function noticeText(value: string): string {
+  const compact = value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  return compact.length <= REVIEW_NOTICE_LIMIT ? compact : `${compact.slice(0, REVIEW_NOTICE_LIMIT - 1)}…`;
+}
+
+function notifyReviewDecision(ctx: ExtensionContext, call: ToolCall, decision: "approve" | "deny" | "ask_user", reason: string): void {
+  if (!ctx.hasUI) return;
+  const level = decision === "approve" ? "info" : decision === "deny" ? "error" : "warning";
+  ctx.ui.notify(`Auto Review ${decision.toUpperCase()} · ${noticeText(call.name)}: ${noticeText(reason)}`, level);
+}
+
 export type DecisionDependencies = {
   store: AutoApprovalConfigStore;
   reviewer?: AutomatedReviewer;
@@ -132,6 +145,7 @@ export async function decideToolCall(
       },
       ctx.signal,
     );
+    notifyReviewDecision(ctx, call, review.decision, review.reason);
     if (review.decision === "approve") return undefined;
     if (review.decision === "deny") return { block: true, reason: `Automated Review denied the Tool Call: ${review.reason}` };
     return requestConfirmation(ctx, call, review.reason, dependencies, review.approvalRuleProposal);

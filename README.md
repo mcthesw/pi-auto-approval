@@ -125,7 +125,7 @@ Each review creates a fresh in-memory Pi SDK session with:
 - explicit cwd, project root, and limited tool metadata;
 - a strict `approve`, `deny`, or `ask_user` JSON response.
 
-The transcript, tool metadata, and project content are labeled as untrusted evidence. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
+The transcript, tool metadata, and project content are labeled as untrusted evidence. Interactive sessions immediately show each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
 
 See [`docs/security.md`](docs/security.md) for the trust boundary and known limitations, [`CONTEXT.md`](CONTEXT.md) for project language, and [`docs/adr`](docs/adr) for architectural decisions.
 
