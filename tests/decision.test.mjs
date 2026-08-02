@@ -166,11 +166,12 @@ test("Always approve validates and persists a project Approval Rule", async () =
     await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
     const proposal = { tool: "custom", input: { kind: "exact", value: { action: "run" } } };
     const reviewer = { review: async () => ({ decision: "ask_user", reason: "confirm scope", approvalRuleProposal: proposal }) };
+    const selections = ["Always approve with rule", "Save rule"];
     const ctx = context({
       cwd: directory,
       hasUI: true,
       mode: "rpc",
-      select: async () => "Always approve with rule",
+      select: async () => selections.shift(),
       editor: async (_title, source) => source,
       input: async () => undefined,
     });
@@ -180,6 +181,38 @@ test("Always approve validates and persists a project Approval Rule", async () =
     if (loaded.ok) assert.deepEqual(loaded.config.projects[project.key].approvalRules[0].matcher, proposal);
     const failingReviewer = { review: async () => { throw new Error("should not run"); } };
     assert.equal(await decideToolCall(context({ cwd: directory }), call, dependencies(project, store, failingReviewer)), undefined);
+  });
+});
+
+test("Always approve persists an explicitly Global Tool-wide Rule in Global Scope", async () => {
+  await withDecision(async ({ directory, project, store }) => {
+    await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
+    const reviewer = { review: async () => ({ decision: "ask_user", reason: "confirm scope" }) };
+    const selections = [
+      "Always approve with rule",
+      "Change match type",
+      "All inputs",
+      "Scope: Current project",
+      "Save rule",
+    ];
+    const ctx = context({
+      cwd: directory,
+      hasUI: true,
+      mode: "rpc",
+      select: async () => selections.shift(),
+      editor: async (_title, source) => source,
+    });
+    assert.equal(await decideToolCall(ctx, call, dependencies(project, store, reviewer)), undefined);
+    const loaded = await store.read();
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) {
+      assert.deepEqual(loaded.config.globalApprovalRules[0].matcher, {
+        tool: "custom",
+        source: { source: "extension", path: "custom.ts" },
+        input: { kind: "any" },
+      });
+      assert.equal(loaded.config.projects[project.key], undefined);
+    }
   });
 });
 
@@ -193,11 +226,12 @@ test("a mismatched Reviewer proposal is replaced by the exact current call match
         approvalRuleProposal: { tool: "custom", input: { kind: "exact", value: { action: "other" } } },
       }),
     };
+    const selections = ["Always approve with rule", "Save rule"];
     const ctx = context({
       cwd: directory,
       hasUI: true,
       mode: "rpc",
-      select: async () => "Always approve with rule",
+      select: async () => selections.shift(),
       editor: async (_title, source) => source,
     });
     assert.equal(await decideToolCall(ctx, call, dependencies(project, store, reviewer)), undefined);

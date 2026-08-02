@@ -10,6 +10,8 @@ import type { ReviewToolMetadata } from "./src/review/context.ts";
 import { openAutoApprovalSettings } from "./src/ui/settings.ts";
 import { toolSourceIdentity } from "./src/tool-identity.ts";
 import { FrictionHistoryStore, frictionHistoryFile } from "./src/friction/store.ts";
+import { RuleAdvisor } from "./src/advisor/advisor.ts";
+import type { AdvisorToolMetadata } from "./src/advisor/prompt.ts";
 
 const STATUS_KEY = "auto-approval";
 
@@ -20,6 +22,17 @@ function reviewMetadata(tool: ToolInfo | undefined): ReviewToolMetadata | undefi
     description: tool.description,
     parameters: tool.parameters,
     sourceInfo: tool.sourceInfo,
+  };
+}
+
+function advisorMetadata(tool: ToolInfo): AdvisorToolMetadata {
+  const source = toolSourceIdentity(tool);
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    sourceInfo: tool.sourceInfo,
+    ...(source ? { source } : {}),
   };
 }
 
@@ -59,15 +72,24 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
   };
 
   pi.registerCommand("auto-approval", {
-    description: "Configure the Reviewer model, Policy Rules, and project Approval Rules",
+    description: "Review approval friction and configure Auto Approval",
     handler: async (_args, ctx) => {
       const activeReviewer = await initializeReviewer();
       const project = await projectIdentity(pi, ctx.cwd);
+      const skills = ctx.getSystemPromptOptions().skills?.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+      })) ?? [];
       await openAutoApprovalSettings(ctx, {
         store,
+        history: frictionStore,
         projectKey: project.key,
+        projectRoot: project.root,
         reviewer: activeReviewer,
+        advisor: activeReviewer ? new RuleAdvisor(activeReviewer) : undefined,
         reviewerUnavailableReason: reviewerInitializationError,
+        tools: pi.getAllTools().map(advisorMetadata),
+        skills,
       });
     },
   });

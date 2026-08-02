@@ -5,7 +5,9 @@ A [Pi](https://github.com/badlogic/pi-mono) extension that approves known Tool C
 ```text
 Tool Call
   -> project Approval Rules
-  -> ordered Approval Policy
+  -> ordered project Approval Policy
+  -> source-bound Global Tool-wide Rules
+  -> built-in defaults
        -> approve | deny | ask_user | auto_review
        -> fresh tool-less Review Agent
             -> approve | deny | ask_user
@@ -33,14 +35,14 @@ No npm package has been released yet.
 
 ## Default policy
 
-The built-in policy applies only to Pi built-in tools. A custom extension that overrides a built-in tool name does not inherit its approval.
+The standard-tool policy applies by Tool name and input semantics, including standard Pi tools supplied through an SDK host. Pi extensions already execute with the user's process permissions, so provenance labels are not treated as a sandbox boundary.
 
 - Project-local `read`, `grep`, `find`, and `ls` calls are approved.
 - Project-local `write` and `edit` calls are approved except for Control Paths: `.git`, `.pi`, `.agents`, and `AGENTS.md`.
-- A conservative Bash classifier approves a small read-only command set only when the command syntax, arguments, executable resolution, Pi shell settings, and relevant environment variables can all be verified. Git and `file` commands are excluded because repository/configuration hooks or options can execute programs or write files.
+- A conservative Bash classifier approves a small read-only command set only when the command syntax, arguments, executable resolution, Pi shell settings, and relevant environment variables can all be verified. Git approval is limited to metadata-only `log`, `rev-parse`, and `branch --show-current` forms; `file`, diff-producing Git operations, and other Git commands remain excluded.
 - Everything else routes to Automated Review.
 
-User Policy Rules run before these built-in defaults. Project Approval Rules run before all Policy Rules.
+Project Approval Rules run first, followed by ordered project Policy Rules, source-bound Global Tool-wide Rules, and built-in defaults.
 
 ## User confirmation
 
@@ -50,7 +52,7 @@ When a call needs confirmation, choose one of:
 - **Always approve** — review and edit the proposed structured matcher before saving it
 - **Deny** — optionally add feedback for the Main Agent
 
-Accepted Approval Rules are stored for the current project. A rule proposed by the Review Agent is inert until you explicitly accept it.
+Accepted rules default to the current project. A Tool-wide rule for one non-standard Tool Identity can be explicitly switched to Global Scope. A rule proposed by the Review Agent or Rule Advisor is inert until you explicitly accept it.
 
 ## Configuration
 
@@ -70,6 +72,7 @@ It is versioned, strictly validated, written atomically, and protected by an int
     "modelId": "gpt-5.4-mini",
     "thinkingLevel": "low"
   },
+  "globalApprovalRules": [],
   "projects": {
     "/canonical/project/root": {
       "policyRules": [
@@ -113,7 +116,7 @@ Available Policy routes are `approve`, `deny`, `ask_user`, and `auto_review`. Ma
 - `pathGlob` uses project-relative POSIX paths and `minimatch` syntax.
 - Bash `tokenPrefix` matches conservatively tokenized command prefixes.
 
-Unknown and custom tools require complete-input `exact` matchers. Use `/auto-approval` to manage Reviewer settings and project rules. Invalid configuration never grants permission: interactive sessions ask, while non-interactive sessions deny.
+Unknown and custom tools support complete-input `exact` matchers. Non-standard tools with a current source identity can additionally use an explicit `any` matcher for all inputs; only that Tool Identity may be granted Global Scope. Use `/auto-approval` to manage Reviewer settings and rules. Invalid configuration never grants permission: interactive sessions ask, while non-interactive sessions deny.
 
 ## Automated Review
 
@@ -125,7 +128,13 @@ Each review creates a fresh in-memory Pi SDK session with:
 - explicit cwd, project root, and limited tool metadata;
 - a strict `approve`, `deny`, or `ask_user` JSON response.
 
-The transcript, tool metadata, and project content are labeled as untrusted evidence. Interactive sessions immediately show each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
+The transcript, tool metadata, and project content are labeled as untrusted evidence. Recent user intent and bounded Pi compaction summaries are supplied separately so long-running sessions retain the agreed task context. Interactive sessions immediately show each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
+
+## Rule Advisor
+
+`/auto-approval` can manually run an isolated Rule Advisor. It reviews up to 50 Friction Records from the last seven days, current rules, current Tool metadata, and skill names/descriptions, then returns at most 10 inactive Approval Rule Proposals. Candidates start unselected; the user can inspect evidence counts, edit a human-readable matcher, choose Project or eligible Global scope, and confirm one atomic save.
+
+Friction History is stored separately in `~/.pi/agent/auto-approval-friction.json`. Inputs are summarized before persistence (256-character strings, 10 array items, six levels, 4 KiB per record); Tool Results and conversation transcripts are never stored. The Advisor also supports cold-start suggestions for clearly low-risk external tools from the current Tool Catalog.
 
 See [`docs/security.md`](docs/security.md) for the trust boundary and known limitations, [`CONTEXT.md`](CONTEXT.md) for project language, and [`docs/adr`](docs/adr) for architectural decisions.
 

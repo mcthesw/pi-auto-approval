@@ -62,8 +62,9 @@ test("settings UI adds project Policy and Approval Rules", async () => {
       "Policy Rules",
       "Add Policy Rule",
       "Back",
-      "Approval Rules",
+      "Project Approval Rules",
       "Add Approval Rule",
+      "Save rule",
       "Back",
       "Done",
     ];
@@ -74,6 +75,35 @@ test("settings UI adds project Policy and Approval Rules", async () => {
     if (result.ok) {
       assert.equal(result.config.projects[project.key].policyRules.length, 1);
       assert.equal(result.config.projects[project.key].approvalRules.length, 1);
+    }
+  });
+});
+
+test("settings UI explicitly adds a current external Tool to Global Approval Rules", async () => {
+  await withSettings(async ({ project, store }) => {
+    const source = { source: "sdk", path: "<sdk:todowrite>" };
+    const menus = [
+      "Global Approval Rules",
+      "Add Tool-wide Rule",
+      `todowrite · ${source.source} · ${source.path}`,
+      "Back",
+      "Done",
+    ];
+    const { ctx } = mockContext(async () => menus.shift());
+    await openAutoApprovalSettings(ctx, {
+      store,
+      projectKey: project.key,
+      reviewer,
+      tools: [{ name: "todowrite", source }],
+    });
+    const result = await store.read();
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.config.globalApprovalRules[0].matcher, {
+        tool: "todowrite",
+        source,
+        input: { kind: "any" },
+      });
     }
   });
 });

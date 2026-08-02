@@ -22,7 +22,7 @@ A user-accepted project Approval Rule is authoritative for every matching Tool C
 
 Policy Rules are ordered and first-match-wins. They can narrow built-in defaults by routing selected calls to `deny`, `ask_user`, or `auto_review`, or widen them with `approve`. A project Policy Rule also takes precedence over a Global Approval Rule.
 
-Global Approval Rules are restricted to all inputs of one non-builtin Tool identified by both its name and Pi source identity. They cannot authorize built-in tools, commands, paths, or arbitrary field patterns across projects. A same-name Tool from another source does not inherit the rule.
+Global Approval Rules are restricted to all inputs of one non-standard Tool identified by both its name and Pi source identity. They cannot authorize standard `bash`, `read`, `write`, `edit`, `grep`, `find`, or `ls` tools, commands, paths, or arbitrary field patterns across projects. A same-name Tool from another source does not inherit the rule.
 
 Configuration is never loaded from the repository being authorized. An invalid configuration file does not fall back to permissive defaults.
 

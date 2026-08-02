@@ -15,16 +15,13 @@ const theme = {
   getBgAnsi: () => "",
 };
 
-function component(matcherText = '{"tool":"read","input":{"kind":"exact","value":{"path":"README.md"}}}') {
+function component(matcherSummary = "read · Exact call") {
   const state = { renders: 0, result: undefined };
   const tui = { requestRender: () => { state.renders += 1; } };
   const instance = new ApprovalConfirmationComponent(tui, theme, (result) => { state.result = result; }, {
     title: "Tool approval required",
     detail: "read README.md",
-    matcherText,
-    validateMatcherText: (value) => {
-      try { JSON.parse(value); return undefined; } catch { return "invalid JSON"; }
-    },
+    matcherSummary,
   });
   return { instance, state };
 }
@@ -38,7 +35,7 @@ test("confirmation component supports approve once, always, and denial feedback"
   always.instance.handleInput("\x1b[B");
   always.instance.handleInput("\r");
   assert.equal(always.state.result.kind, "always");
-  assert.match(always.state.result.matcherText, /README\.md/);
+  assert.deepEqual(always.state.result, { kind: "always" });
 
   const deny = component();
   deny.instance.handleInput("\x1b[B");
@@ -48,12 +45,9 @@ test("confirmation component supports approve once, always, and denial feedback"
   assert.deepEqual(deny.state.result, { kind: "deny", feedback: "use read instead" });
 });
 
-test("confirmation component keeps invalid inline matcher open and renders within width", () => {
-  const { instance, state } = component("{");
-  instance.handleInput("\x1b[B");
-  instance.handleInput("\r");
-  assert.equal(state.result, undefined);
-  assert.match(instance.render(50).join("\n"), /invalid JSON/);
+test("confirmation component renders a human-readable rule summary within width", () => {
+  const { instance } = component("grep · path matches: crates/**");
+  assert.match(instance.render(50).join("\n"), /grep · path matches/);
   assert.ok(instance.render(24).every((line) => visibleWidth(line) <= 24));
 });
 
@@ -64,7 +58,7 @@ test("confirmation component distinguishes Escape from denial", () => {
 });
 
 test("RPC confirmation validates edited proposal and retries mismatches", async () => {
-  const selections = ["Always approve with rule", "Always approve with rule"];
+  const selections = ["Always approve with rule", "Advanced JSON", "Save rule", "Advanced JSON", "Save rule"];
   const edits = [
     '{"tool":"read","input":{"kind":"exact","value":{"path":"other.md"}}}',
     '{"tool":"read","input":{"kind":"exact","value":{"path":"README.md"}}}',

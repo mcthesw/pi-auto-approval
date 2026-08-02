@@ -3,9 +3,15 @@ import { readFile } from "node:fs/promises";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ApprovalRule, AutoApprovalConfig, PolicyRule, ProjectConfig } from "../domain.ts";
 import { defaultAutoApprovalConfig } from "../domain.ts";
-import { parseApprovalRule, parseAutoApprovalConfig, parsePolicyRule } from "../config/schema.ts";
+import { parseAutoApprovalConfig, parsePolicyRule } from "../config/schema.ts";
 import type { AutoApprovalConfigStore } from "../config/store.ts";
 import type { AutomatedReviewer } from "../review/reviewer.ts";
+import type { RuleAdvisor } from "../advisor/advisor.ts";
+import type { AdvisorSkillSummary, AdvisorToolMetadata } from "../advisor/prompt.ts";
+import type { FrictionHistoryStore } from "../friction/store.ts";
+import { isToolWideMatcher, validateToolMatcher } from "../matchers.ts";
+import { openRuleAdvisor } from "./advisor.ts";
+import { editApprovalRule, matcherSummary } from "./rule-editor.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
@@ -14,6 +20,11 @@ type SettingsDependencies = {
   projectKey: string;
   reviewer?: AutomatedReviewer;
   reviewerUnavailableReason?: string;
+  advisor?: RuleAdvisor;
+  history?: FrictionHistoryStore;
+  projectRoot?: string;
+  tools?: readonly AdvisorToolMetadata[];
+  skills?: readonly AdvisorSkillSummary[];
 };
 
 function projectConfig(config: AutoApprovalConfig, key: string): ProjectConfig {
@@ -89,7 +100,7 @@ function approvalTemplate(): ApprovalRule {
   };
 }
 
-async function editRule<T extends PolicyRule | ApprovalRule>(
+async function editRule<T extends PolicyRule>(
   ctx: ExtensionContext,
   title: string,
   initial: T,
@@ -157,23 +168,89 @@ async function manageApprovalRules(ctx: ExtensionContext, dependencies: Settings
     const result = await dependencies.store.read();
     if (!result.ok) return;
     const rules = result.config.projects[dependencies.projectKey]?.approvalRules ?? [];
-    const labels = ["Add Approval Rule", ...rules.map((rule, index) => `${index + 1}. ${compact(rule.matcher)}`), "Back"];
+    const labels = ["Add Approval Rule", ...rules.map((rule, index) => `${index + 1}. ${matcherSummary(rule.matcher)}`), "Back"];
     const selected = await ctx.ui.select("Project Approval Rules", labels);
     if (!selected || selected === "Back") return;
     if (selected === "Add Approval Rule") {
-      const rule = await editRule(ctx, "New Approval Rule JSON", approvalTemplate(), parseApprovalRule);
-      if (rule) await mutate(ctx, dependencies.store, (config) => { projectConfig(config, dependencies.projectKey).approvalRules.push(rule); });
+      const template = approvalTemplate();
+      const edited = await editApprovalRule(ctx, { initial: template.matcher });
+      if (edited) await mutate(ctx, dependencies.store, (config) => {
+        const rule = { id: template.id, matcher: edited.matcher };
+        if (edited.scope === "global" && isToolWideMatcher(rule.matcher)) {
+          config.globalApprovalRules.push({ ...rule, matcher: rule.matcher });
+        } else projectConfig(config, dependencies.projectKey).approvalRules.push(rule);
+      });
       continue;
     }
     const index = labels.indexOf(selected) - 1;
     const rule = rules[index];
     if (!rule) continue;
-    const action = await ctx.ui.select(`Approval Rule ${rule.id}`, ["Edit", "Delete", "Back"]);
+    const action = await ctx.ui.select(`Approval Rule\n${matcherSummary(rule.matcher)}`, ["Edit", "Delete", "Back"]);
     if (action === "Edit") {
-      const edited = await editRule(ctx, "Edit Approval Rule JSON", rule, parseApprovalRule);
-      if (edited) await mutate(ctx, dependencies.store, (config) => { projectConfig(config, dependencies.projectKey).approvalRules[index] = edited; });
+      const edited = await editApprovalRule(ctx, {
+        initial: rule.matcher,
+        toolSource: isToolWideMatcher(rule.matcher) ? rule.matcher.source : undefined,
+      });
+      if (edited) await mutate(ctx, dependencies.store, (config) => {
+        const projectRules = projectConfig(config, dependencies.projectKey).approvalRules;
+        if (edited.scope === "global" && isToolWideMatcher(edited.matcher)) {
+          projectRules.splice(index, 1);
+          config.globalApprovalRules.push({ id: rule.id, matcher: edited.matcher });
+        } else projectRules[index] = { id: rule.id, matcher: edited.matcher };
+      });
     } else if (action === "Delete" && await ctx.ui.confirm("Delete Approval Rule?", rule.id)) {
       await mutate(ctx, dependencies.store, (config) => { projectConfig(config, dependencies.projectKey).approvalRules.splice(index, 1); });
+    }
+  }
+}
+
+async function manageGlobalApprovalRules(ctx: ExtensionContext, dependencies: SettingsDependencies): Promise<void> {
+  for (;;) {
+    const result = await dependencies.store.read();
+    if (!result.ok) return;
+    const rules = result.config.globalApprovalRules;
+    const labels = ["Add Tool-wide Rule", ...rules.map((rule, index) => `${index + 1}. ${matcherSummary(rule.matcher)}`), "Back"];
+    const selected = await ctx.ui.select("Global Tool-wide Approval Rules", labels);
+    if (!selected || selected === "Back") return;
+    if (selected === "Add Tool-wide Rule") {
+      const tools = (dependencies.tools ?? []).flatMap((tool) => {
+        if (!tool.source) return [];
+        const matcher = { tool: tool.name, source: tool.source, input: { kind: "any" as const } };
+        const exists = rules.some((rule) => rule.matcher.tool === matcher.tool
+          && rule.matcher.source.source === matcher.source.source
+          && rule.matcher.source.path === matcher.source.path);
+        return validateToolMatcher(matcher) || exists ? [] : [{ tool, matcher }];
+      });
+      const toolLabels = tools.map(({ tool }) => `${tool.name} · ${tool.source!.source} · ${tool.source!.path}`);
+      const chosen = await ctx.ui.select("Approve all inputs globally for which Tool?", [...toolLabels, "Cancel"]);
+      const candidate = tools[toolLabels.indexOf(chosen ?? "")];
+      if (candidate && await ctx.ui.confirm("Create Global Tool-wide Approval Rule?", matcherSummary(candidate.matcher))) {
+        await mutate(ctx, dependencies.store, (config) => {
+          config.globalApprovalRules.push({ id: randomUUID(), matcher: candidate.matcher });
+        });
+      }
+      continue;
+    }
+    const index = labels.indexOf(selected) - 1;
+    const rule = rules[index];
+    if (!rule) continue;
+    const action = await ctx.ui.select(`Global Approval Rule\n${matcherSummary(rule.matcher)}`, ["Edit", "Delete", "Back"]);
+    if (action === "Edit") {
+      const edited = await editApprovalRule(ctx, {
+        initial: rule.matcher,
+        initialScope: "global",
+        toolSource: rule.matcher.source,
+      });
+      if (edited) await mutate(ctx, dependencies.store, (config) => {
+        if (edited.scope === "global" && isToolWideMatcher(edited.matcher)) {
+          config.globalApprovalRules[index] = { id: rule.id, matcher: edited.matcher };
+        } else {
+          config.globalApprovalRules.splice(index, 1);
+          projectConfig(config, dependencies.projectKey).approvalRules.push({ id: rule.id, matcher: edited.matcher });
+        }
+      });
+    } else if (action === "Delete" && await ctx.ui.confirm("Delete Global Approval Rule?", rule.id)) {
+      await mutate(ctx, dependencies.store, (config) => { config.globalApprovalRules.splice(index, 1); });
     }
   }
 }
@@ -224,14 +301,32 @@ export async function openAutoApprovalSettings(ctx: ExtensionContext, dependenci
     const selected = await ctx.ui.select("Pi Auto Approval", [
       `Reviewer model: ${reviewer}`,
       `Reviewer thinking: ${config.reviewer?.thinkingLevel ?? "not configured"}`,
+      "Rule Advisor",
       "Policy Rules",
-      "Approval Rules",
+      "Project Approval Rules",
+      "Global Approval Rules",
       "Done",
     ]);
     if (!selected || selected === "Done") return;
     if (selected.startsWith("Reviewer model:")) await configureModel(ctx, dependencies, config);
     else if (selected.startsWith("Reviewer thinking:")) await configureThinking(ctx, dependencies, config);
-    else if (selected === "Policy Rules") await managePolicyRules(ctx, dependencies);
-    else if (selected === "Approval Rules") await manageApprovalRules(ctx, dependencies);
+    else if (selected === "Rule Advisor") {
+      if (!dependencies.history || !dependencies.projectRoot) {
+        ctx.ui.notify("Rule Advisor runtime unavailable", "warning");
+      } else {
+        await openRuleAdvisor(ctx, {
+          store: dependencies.store,
+          history: dependencies.history,
+          advisor: dependencies.advisor,
+          reviewerUnavailableReason: dependencies.reviewerUnavailableReason,
+          projectKey: dependencies.projectKey,
+          projectRoot: dependencies.projectRoot,
+          tools: dependencies.tools ?? [],
+          skills: dependencies.skills ?? [],
+        });
+      }
+    } else if (selected === "Policy Rules") await managePolicyRules(ctx, dependencies);
+    else if (selected === "Project Approval Rules") await manageApprovalRules(ctx, dependencies);
+    else if (selected === "Global Approval Rules") await manageGlobalApprovalRules(ctx, dependencies);
   }
 }

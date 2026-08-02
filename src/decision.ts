@@ -9,7 +9,7 @@ import type {
   ToolSourceIdentity,
   UserConfirmationChoice,
 } from "./domain.ts";
-import { exactMatcherFor, matchesToolCall, type MatcherContext } from "./matchers.ts";
+import { exactMatcherFor, isToolWideMatcher, matchesToolCall, type MatcherContext } from "./matchers.ts";
 import { resolveProjectPath, type ProjectIdentity } from "./project.ts";
 import { tokenizeSingleCommand } from "./policy/bash.ts";
 import { evaluatePolicy, type BashExecutionGuard } from "./policy/engine.ts";
@@ -69,11 +69,18 @@ async function persistApprovalRule(
   ctx: ExtensionContext,
   dependencies: DecisionDependencies,
   matcher: ToolMatcher,
+  scope: "project" | "global" = "project",
 ): Promise<void> {
   try {
     await dependencies.store.update((config) => {
-      const project = (config.projects[dependencies.project.key] ??= { policyRules: [], approvalRules: [] });
-      project.approvalRules.push({ id: randomUUID(), matcher });
+      const rule = { id: randomUUID(), matcher };
+      if (scope === "global") {
+        if (!isToolWideMatcher(matcher)) throw new Error("Only Tool-wide Approval Rules may use Global Scope");
+        config.globalApprovalRules.push({ ...rule, matcher });
+      } else {
+        const project = (config.projects[dependencies.project.key] ??= { policyRules: [], approvalRules: [] });
+        project.approvalRules.push(rule);
+      }
     });
   } catch (error) {
     ctx.ui.notify(
@@ -110,12 +117,13 @@ async function requestConfirmation(
     call,
     reason,
     proposal,
+    toolSource: dependencies.toolSource,
     validateProposal: async (matcher) =>
       await matchesToolCall(matcher, call, matchContext) ? undefined : "Approval Rule must match the current Tool Call",
   });
   if (result.kind === "approve_once") return { decision: undefined, userChoice: "approve_once" };
   if (result.kind === "always") {
-    if (result.matcher) await persistApprovalRule(ctx, dependencies, result.matcher);
+    if (result.matcher) await persistApprovalRule(ctx, dependencies, result.matcher, result.scope);
     return { decision: undefined, userChoice: "always" };
   }
   if (result.kind === "cancelled") {
