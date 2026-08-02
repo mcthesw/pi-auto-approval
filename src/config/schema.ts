@@ -5,12 +5,16 @@ import type {
   AutoApprovalConfig,
   DecisionRoute,
   FieldMatcher,
+  GlobalApprovalRule,
   PolicyRule,
   ProjectConfig,
   ReviewerConfig,
+  SpecificToolMatcher,
   ToolMatcher,
+  ToolSourceIdentity,
+  ToolWideMatcher,
 } from "../domain.ts";
-import { isJsonValue, validateToolMatcher } from "../matchers.ts";
+import { isJsonValue, isToolWideMatcher, validateToolMatcher } from "../matchers.ts";
 
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const ROUTES = new Set<DecisionRoute>(["approve", "deny", "ask_user", "auto_review"]);
@@ -65,18 +69,36 @@ function parseFieldMatcher(value: unknown, at: string): FieldMatcher {
   return fail(`${at}.kind`, "expected exact, tokenPrefix, or pathGlob");
 }
 
+function parseToolSourceIdentity(value: unknown, at: string): ToolSourceIdentity {
+  const input = record(value, at);
+  exactKeys(input, ["source", "path"], at);
+  return {
+    source: nonEmptyString(input.source, `${at}.source`),
+    path: nonEmptyString(input.path, `${at}.path`),
+  };
+}
+
 export function parseToolMatcher(value: unknown, at = "matcher"): ToolMatcher {
   const input = record(value, at);
-  exactKeys(input, ["tool", "input"], at);
   const tool = nonEmptyString(input.tool, `${at}.tool`);
   const inputMatcher = record(input.input, `${at}.input`);
 
   let matcher: ToolMatcher;
-  if (inputMatcher.kind === "exact") {
+  if (inputMatcher.kind === "any") {
+    exactKeys(input, ["tool", "source", "input"], at);
+    exactKeys(inputMatcher, ["kind"], `${at}.input`);
+    matcher = {
+      tool,
+      source: parseToolSourceIdentity(input.source, `${at}.source`),
+      input: { kind: "any" },
+    };
+  } else if (inputMatcher.kind === "exact") {
+    exactKeys(input, ["tool", "input"], at);
     exactKeys(inputMatcher, ["kind", "value"], `${at}.input`);
     if (!("value" in inputMatcher) || !isJsonValue(inputMatcher.value)) fail(`${at}.input.value`, "expected JSON data");
     matcher = { tool, input: { kind: "exact", value: structuredClone(inputMatcher.value) } };
   } else if (inputMatcher.kind === "fields") {
+    exactKeys(input, ["tool", "input"], at);
     exactKeys(inputMatcher, ["kind", "fields"], `${at}.input`);
     const fields = record(inputMatcher.fields, `${at}.input.fields`);
     matcher = {
@@ -89,11 +111,23 @@ export function parseToolMatcher(value: unknown, at = "matcher"): ToolMatcher {
       },
     };
   } else {
-    fail(`${at}.input.kind`, "expected exact or fields");
+    fail(`${at}.input.kind`, "expected any, exact, or fields");
   }
 
   const matcherError = validateToolMatcher(matcher);
   if (matcherError) fail(at, matcherError);
+  return matcher;
+}
+
+function parseSpecificToolMatcher(value: unknown, at: string): SpecificToolMatcher {
+  const matcher = parseToolMatcher(value, at);
+  if (isToolWideMatcher(matcher)) fail(at, "tool-wide matcher is only valid for Approval Rules");
+  return matcher;
+}
+
+function parseToolWideMatcher(value: unknown, at: string): ToolWideMatcher {
+  const matcher = parseToolMatcher(value, at);
+  if (!isToolWideMatcher(matcher)) fail(at, "global Approval Rules must be tool-wide");
   return matcher;
 }
 
@@ -103,13 +137,19 @@ export function parseApprovalRule(value: unknown, at = "approvalRule"): Approval
   return { id: nonEmptyString(input.id, `${at}.id`), matcher: parseToolMatcher(input.matcher, `${at}.matcher`) };
 }
 
+function parseGlobalApprovalRule(value: unknown, at: string): GlobalApprovalRule {
+  const input = record(value, at);
+  exactKeys(input, ["id", "matcher"], at);
+  return { id: nonEmptyString(input.id, `${at}.id`), matcher: parseToolWideMatcher(input.matcher, `${at}.matcher`) };
+}
+
 export function parsePolicyRule(value: unknown, at = "policyRule"): PolicyRule {
   const input = record(value, at);
   exactKeys(input, ["id", "matcher", "route"], at);
   if (!ROUTES.has(input.route as DecisionRoute)) fail(`${at}.route`, "expected approve, deny, ask_user, or auto_review");
   return {
     id: nonEmptyString(input.id, `${at}.id`),
-    matcher: parseToolMatcher(input.matcher, `${at}.matcher`),
+    matcher: parseSpecificToolMatcher(input.matcher, `${at}.matcher`),
     route: input.route as DecisionRoute,
   };
 }
@@ -139,8 +179,15 @@ function parseReviewer(value: unknown, at: string): ReviewerConfig {
 
 export function parseAutoApprovalConfig(value: unknown): AutoApprovalConfig {
   const input = record(value, "config");
-  exactKeys(input, ["version", "reviewer", "projects"], "config");
+  exactKeys(input, ["version", "reviewer", "globalApprovalRules", "projects"], "config");
   if (input.version !== 1) fail("config.version", "expected 1");
+  if (input.globalApprovalRules !== undefined && !Array.isArray(input.globalApprovalRules)) {
+    fail("config.globalApprovalRules", "expected an array");
+  }
+  const globalApprovalRules = (input.globalApprovalRules ?? []).map((rule, index) =>
+    parseGlobalApprovalRule(rule, `config.globalApprovalRules[${index}]`));
+  const globalIds = globalApprovalRules.map((rule) => rule.id);
+  if (new Set(globalIds).size !== globalIds.length) fail("config.globalApprovalRules", "rule ids must be unique");
   const projectsInput = record(input.projects, "config.projects");
   const projects: Record<string, ProjectConfig> = {};
   for (const [key, project] of Object.entries(projectsInput)) {
@@ -156,6 +203,7 @@ export function parseAutoApprovalConfig(value: unknown): AutoApprovalConfig {
   return {
     version: 1,
     ...(input.reviewer === undefined ? {} : { reviewer: parseReviewer(input.reviewer, "config.reviewer") }),
+    globalApprovalRules,
     projects,
   };
 }

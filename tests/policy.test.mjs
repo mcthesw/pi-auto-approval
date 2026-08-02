@@ -24,7 +24,7 @@ function context(projectRoot, cwd, project = { policyRules: [], approvalRules: [
     projectRoot,
     cwd,
     project,
-    provenance,
+    globalApprovalRules: [],
     bash: { trusted: true, isExecutableTrusted: async () => true },
   };
 }
@@ -129,6 +129,36 @@ test("project Approval Rules are authoritative before Policy Rules and defaults"
       reason: "matched an authoritative project Approval Rule",
       ruleId: "allow-custom",
     });
+  });
+});
+
+test("project Policy Rules precede source-bound Global Tool-wide Rules", async () => {
+  await withProject(async ({ project, identity }) => {
+    const matcher = {
+      tool: "context7_query-docs",
+      source: { source: "extension", path: "context7" },
+      input: { kind: "any" },
+    };
+    const base = context(identity.root, project, {
+      approvalRules: [],
+      policyRules: [{ id: "confirm-context7", matcher: { tool: "context7_query-docs", input: { kind: "exact", value: { query: "x" } } }, route: "ask_user" }],
+    });
+    base.globalApprovalRules = [{ id: "global-context7", matcher }];
+    base.toolSource = { source: "extension", path: "context7" };
+    const policy = await evaluatePolicy(call("context7_query-docs", { query: "x" }), base);
+    assert.equal(policy.source, "policy_rule");
+
+    base.project.policyRules = [];
+    const global = await evaluatePolicy(call("context7_query-docs", { query: "anything" }), base);
+    assert.deepEqual(global, {
+      route: "approve",
+      source: "global_approval_rule",
+      reason: "matched an authoritative Global Tool-wide Approval Rule",
+      ruleId: "global-context7",
+    });
+
+    base.toolSource = { source: "extension", path: "replacement" };
+    assert.equal((await evaluatePolicy(call("context7_query-docs", { query: "anything" }), base)).route, "auto_review");
   });
 });
 

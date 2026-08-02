@@ -21,19 +21,37 @@ export type FieldMatcher =
   | { kind: "tokenPrefix"; tokens: string[] }
   | { kind: "pathGlob"; pattern: string };
 
-export type ToolMatcher = {
+export type ToolSourceIdentity = {
+  source: string;
+  path: string;
+};
+
+export type SpecificToolMatcher = {
   tool: string;
   input: ExactInputMatcher | { kind: "fields"; fields: Record<string, FieldMatcher> };
 };
+
+export type ToolWideMatcher = {
+  tool: string;
+  source: ToolSourceIdentity;
+  input: { kind: "any" };
+};
+
+export type ToolMatcher = SpecificToolMatcher | ToolWideMatcher;
 
 export type ApprovalRule = {
   id: string;
   matcher: ToolMatcher;
 };
 
+export type GlobalApprovalRule = {
+  id: string;
+  matcher: ToolWideMatcher;
+};
+
 export type PolicyRule = {
   id: string;
-  matcher: ToolMatcher;
+  matcher: SpecificToolMatcher;
   route: DecisionRoute;
 };
 
@@ -51,6 +69,7 @@ export type ProjectConfig = {
 export type AutoApprovalConfig = {
   version: 1;
   reviewer?: ReviewerConfig;
+  globalApprovalRules: GlobalApprovalRule[];
   projects: Record<string, ProjectConfig>;
 };
 
@@ -60,5 +79,5 @@ export const EMPTY_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({
 });
 
 export function defaultAutoApprovalConfig(): AutoApprovalConfig {
-  return { version: 1, projects: {} };
+  return { version: 1, globalApprovalRules: [], projects: {} };
 }

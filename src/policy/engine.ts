@@ -1,4 +1,12 @@
-import type { ApprovalRule, DecisionRoute, PolicyRule, ProjectConfig, ToolCall } from "../domain.ts";
+import type {
+  ApprovalRule,
+  DecisionRoute,
+  GlobalApprovalRule,
+  PolicyRule,
+  ProjectConfig,
+  ToolCall,
+  ToolSourceIdentity,
+} from "../domain.ts";
 import type { MatcherContext } from "../matchers.ts";
 import { matchesToolCall } from "../matchers.ts";
 import { resolveProjectPath } from "../project.ts";
@@ -8,7 +16,7 @@ export type ToolProvenance = "builtin" | "sdk" | "extension" | "unknown";
 
 export type PolicyDecision = {
   route: DecisionRoute;
-  source: "approval_rule" | "policy_rule" | "builtin_policy" | "default";
+  source: "approval_rule" | "policy_rule" | "global_approval_rule" | "builtin_policy" | "default";
   reason: string;
   ruleId?: string;
 };
@@ -23,7 +31,8 @@ export type PolicyEvaluationContext = {
   projectRoot: string;
   cwd: string;
   project: ProjectConfig;
-  provenance: ToolProvenance;
+  globalApprovalRules: GlobalApprovalRule[];
+  toolSource?: ToolSourceIdentity;
   bash?: BashExecutionGuard;
 };
 
@@ -49,6 +58,7 @@ function matcherContext(context: PolicyEvaluationContext): MatcherContext {
   return {
     resolvePath: async (value) => resolveProjectPath(context.projectRoot, context.cwd, value),
     tokenizeBash: tokenizeSingleCommand,
+    source: context.toolSource,
   };
 }
 
@@ -132,6 +142,16 @@ export async function evaluatePolicy(call: ToolCall, context: PolicyEvaluationCo
   const policy = await firstMatchingPolicy(context.project.policyRules, call, matchContext);
   if (policy) {
     return { route: policy.route, source: "policy_rule", reason: `matched project Policy Rule ${policy.id}`, ruleId: policy.id };
+  }
+
+  const globalApproval = await firstMatchingApproval(context.globalApprovalRules, call, matchContext);
+  if (globalApproval) {
+    return {
+      route: "approve",
+      source: "global_approval_rule",
+      reason: "matched an authoritative Global Tool-wide Approval Rule",
+      ruleId: globalApproval.id,
+    };
   }
 
   return (

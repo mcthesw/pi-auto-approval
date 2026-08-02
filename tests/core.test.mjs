@@ -75,7 +75,7 @@ test("config replacement validates data and writes a private JSON document", asy
     const store = new AutoApprovalConfigStore(path.join(directory, "auto-approval.json"));
     await store.replace(defaultAutoApprovalConfig());
     const result = await store.read();
-    assert.deepEqual(result, { ok: true, config: { version: 1, projects: {} } });
+    assert.deepEqual(result, { ok: true, config: { version: 1, globalApprovalRules: [], projects: {} } });
     await assert.rejects(store.replace({ version: 1, projects: {}, extra: true }), /unknown property/);
   });
 });
@@ -136,6 +136,54 @@ test("structured matchers enforce tool-specific operators", async () => {
     validateToolMatcher({ tool: "read", input: { kind: "fields", fields: { path: { kind: "pathGlob", pattern: "../*" } } } }),
     /must not traverse/,
   );
+});
+
+test("tool-wide matchers require the same non-builtin tool source", async () => {
+  const matcher = {
+    tool: "context7_query-docs",
+    source: { source: "extension", path: "context7" },
+    input: { kind: "any" },
+  };
+  const toolCall = { id: "1", name: "context7_query-docs", input: { query: "anything" } };
+  assert.equal(validateToolMatcher(matcher), undefined);
+  assert.equal(await matchesToolCall(matcher, toolCall, { ...matcherContext, source: matcher.source }), true);
+  assert.equal(
+    await matchesToolCall(matcher, toolCall, { ...matcherContext, source: { source: "extension", path: "replacement" } }),
+    false,
+  );
+  assert.match(
+    validateToolMatcher({ tool: "read", source: { source: "builtin", path: "read" }, input: { kind: "any" } }),
+    /built-in tools/,
+  );
+});
+
+test("config accepts only source-bound tool-wide Global Approval Rules", () => {
+  const config = parseAutoApprovalConfig({
+    version: 1,
+    globalApprovalRules: [{
+      id: "context7",
+      matcher: {
+        tool: "context7_query-docs",
+        source: { source: "extension", path: "context7" },
+        input: { kind: "any" },
+      },
+    }],
+    projects: {},
+  });
+  assert.equal(config.globalApprovalRules[0].matcher.input.kind, "any");
+  assert.throws(() => parseAutoApprovalConfig({
+    version: 1,
+    globalApprovalRules: [{
+      id: "too-broad",
+      matcher: { tool: "read", source: { source: "builtin", path: "read" }, input: { kind: "any" } },
+    }],
+    projects: {},
+  }), /built-in tools/);
+  assert.throws(() => parseAutoApprovalConfig({
+    version: 1,
+    globalApprovalRules: [{ id: "specific", matcher: { tool: "custom", input: { kind: "exact", value: {} } } }],
+    projects: {},
+  }), /must be tool-wide/);
 });
 
 test("exact fallback matcher copies JSON input and rejects non-JSON input", async () => {

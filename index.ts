@@ -8,17 +8,9 @@ import { inspectBashEnvironment } from "./src/adapters/bash-environment.ts";
 import { AutomatedReviewer, PiReviewSessionFactory } from "./src/review/reviewer.ts";
 import type { ReviewToolMetadata } from "./src/review/context.ts";
 import { openAutoApprovalSettings } from "./src/ui/settings.ts";
-import type { ToolProvenance } from "./src/policy/engine.ts";
+import { toolSourceIdentity } from "./src/tool-identity.ts";
 
 const STATUS_KEY = "auto-approval";
-
-function toolProvenance(tool: ToolInfo | undefined): ToolProvenance {
-  const source = (tool?.sourceInfo as { source?: string } | undefined)?.source;
-  if (source === "builtin") return "builtin";
-  if (source === "sdk") return "sdk";
-  if (source) return "extension";
-  return "unknown";
-}
 
 function reviewMetadata(tool: ToolInfo | undefined): ReviewToolMetadata | undefined {
   if (!tool) return undefined;
@@ -106,7 +98,6 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
     try {
       const project = await projectIdentity(pi, ctx.cwd);
       const tool = pi.getAllTools().find((candidate) => candidate.name === call.name);
-      const provenance = toolProvenance(tool);
       const activeReviewer = await initializeReviewer();
       const bash = call.name === "bash"
         ? await inspectBashEnvironment(pi, ctx.cwd, agentDir, project)
@@ -117,7 +108,7 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
         reviewer: activeReviewer,
         reviewerUnavailableReason: reviewerInitializationError,
         project,
-        provenance,
+        toolSource: toolSourceIdentity(tool),
         bash,
         messages,
         tool: reviewMetadata(tool),

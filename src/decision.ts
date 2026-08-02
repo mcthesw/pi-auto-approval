@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ProjectConfig, ToolCall, ToolMatcher } from "./domain.ts";
+import type { ProjectConfig, ToolCall, ToolMatcher, ToolSourceIdentity } from "./domain.ts";
 import { exactMatcherFor, matchesToolCall, type MatcherContext } from "./matchers.ts";
 import { resolveProjectPath, type ProjectIdentity } from "./project.ts";
 import { tokenizeSingleCommand } from "./policy/bash.ts";
-import { evaluatePolicy, type BashExecutionGuard, type ToolProvenance } from "./policy/engine.ts";
+import { evaluatePolicy, type BashExecutionGuard } from "./policy/engine.ts";
 import type { AutoApprovalConfigStore } from "./config/store.ts";
 import { confirmToolCall } from "./approval/confirmation.ts";
 import type { AutomatedReviewer } from "./review/reviewer.ts";
@@ -30,7 +30,7 @@ export type DecisionDependencies = {
   reviewer?: AutomatedReviewer;
   reviewerUnavailableReason?: string;
   project: ProjectIdentity;
-  provenance: ToolProvenance;
+  toolSource?: ToolSourceIdentity;
   bash?: BashExecutionGuard;
   messages: readonly unknown[];
   tool?: ReviewToolMetadata;
@@ -38,10 +38,11 @@ export type DecisionDependencies = {
 
 const EMPTY_PROJECT: ProjectConfig = { policyRules: [], approvalRules: [] };
 
-function matcherContext(project: ProjectIdentity, cwd: string): MatcherContext {
+function matcherContext(project: ProjectIdentity, cwd: string, source?: ToolSourceIdentity): MatcherContext {
   return {
     resolvePath: async (value) => resolveProjectPath(project.root, cwd, value),
     tokenizeBash: tokenizeSingleCommand,
+    source,
   };
 }
 
@@ -80,7 +81,7 @@ async function requestConfirmation(
   proposed?: ToolMatcher,
 ): Promise<ToolDecision> {
   if (ctx.signal?.aborted) return { block: true, reason: "Tool approval was cancelled" };
-  const matchContext = matcherContext(dependencies.project, ctx.cwd);
+  const matchContext = matcherContext(dependencies.project, ctx.cwd, dependencies.toolSource);
   const proposal = await chooseProposal(call, proposed, matchContext);
   if (!ctx.hasUI) return { block: true, reason: `${reason}; no interactive UI is available` };
   if (!proposal) {
@@ -120,7 +121,8 @@ export async function decideToolCall(
     projectRoot: dependencies.project.root,
     cwd: ctx.cwd,
     project,
-    provenance: dependencies.provenance,
+    globalApprovalRules: loaded.config.globalApprovalRules,
+    toolSource: dependencies.toolSource,
     bash: dependencies.bash,
   });
 

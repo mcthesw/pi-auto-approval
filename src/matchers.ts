@@ -1,6 +1,6 @@
 import path from "node:path";
 import { minimatch } from "minimatch";
-import type { FieldMatcher, JsonValue, ToolCall, ToolMatcher } from "./domain.ts";
+import type { FieldMatcher, JsonValue, ToolCall, ToolMatcher, ToolSourceIdentity, ToolWideMatcher } from "./domain.ts";
 
 const KNOWN_TOOLS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
 const PATH_FIELDS = new Map<string, ReadonlySet<string>>([
@@ -15,6 +15,7 @@ const PATH_FIELDS = new Map<string, ReadonlySet<string>>([
 export type MatcherContext = {
   resolvePath: (value: string) => Promise<{ inside: boolean; relative?: string }>;
   tokenizeBash: (command: string) => string[] | undefined;
+  source?: ToolSourceIdentity;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,8 +65,17 @@ function validateFieldMatcher(tool: string, field: string, matcher: FieldMatcher
   return "unknown field matcher";
 }
 
+export function isToolWideMatcher(matcher: ToolMatcher): matcher is ToolWideMatcher {
+  return matcher.input.kind === "any";
+}
+
 export function validateToolMatcher(matcher: ToolMatcher): string | undefined {
   if (!matcher.tool.trim()) return "matcher tool must not be empty";
+  if (isToolWideMatcher(matcher)) {
+    if (!matcher.source.source.trim() || !matcher.source.path.trim()) return "tool-wide matcher source must not be empty";
+    if (matcher.source.source === "builtin") return "built-in tools cannot use tool-wide approval";
+    return undefined;
+  }
   if (matcher.input.kind === "exact") {
     return isJsonValue(matcher.input.value) ? undefined : "exact input matcher value must be JSON";
   }
@@ -111,6 +121,9 @@ export async function matchesToolCall(
   context: MatcherContext,
 ): Promise<boolean> {
   if (validateToolMatcher(matcher) || matcher.tool !== call.name) return false;
+  if (isToolWideMatcher(matcher)) {
+    return context.source?.source === matcher.source.source && context.source?.path === matcher.source.path;
+  }
   if (matcher.input.kind === "exact") return equalJson(call.input, matcher.input.value);
   if (!isRecord(call.input)) return false;
 

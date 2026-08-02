@@ -99,7 +99,7 @@ test("settings UI repairs invalid config only after explicit confirmation", asyn
     const { ctx, notifications } = mockContext(async () => menus.shift());
     await openAutoApprovalSettings(ctx, { store, projectKey: project.key, reviewer });
     const result = await store.read();
-    assert.deepEqual(result, { ok: true, config: { version: 1, projects: {} } });
+    assert.deepEqual(result, { ok: true, config: { version: 1, globalApprovalRules: [], projects: {} } });
     assert.match(notifications[0].message, /Invalid auto-approval config/);
   });
 });
