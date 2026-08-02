@@ -153,7 +153,7 @@ test("tool-wide matchers require the same non-builtin tool source", async () => 
   );
   assert.match(
     validateToolMatcher({ tool: "read", source: { source: "builtin", path: "read" }, input: { kind: "any" } }),
-    /built-in tools/,
+    /standard tools/,
   );
 });
 
@@ -178,7 +178,7 @@ test("config accepts only source-bound tool-wide Global Approval Rules", () => {
       matcher: { tool: "read", source: { source: "builtin", path: "read" }, input: { kind: "any" } },
     }],
     projects: {},
-  }), /built-in tools/);
+  }), /standard tools/);
   assert.throws(() => parseAutoApprovalConfig({
     version: 1,
     globalApprovalRules: [{ id: "specific", matcher: { tool: "custom", input: { kind: "exact", value: {} } } }],

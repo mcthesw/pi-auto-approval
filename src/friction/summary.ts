@@ -47,6 +47,10 @@ function summarize(value: unknown, depth: number, ancestors: WeakSet<object>): J
   }
 }
 
+export function summarizeJsonValue(value: unknown): JsonValue {
+  return summarize(value, 0, new WeakSet());
+}
+
 export type FrictionRecordInput = {
   call: ToolCall;
   source?: ToolSourceIdentity;
@@ -61,7 +65,7 @@ export function createFrictionRecord(input: FrictionRecordInput): FrictionRecord
     id: randomUUID(),
     timestamp: (input.now ?? new Date()).toISOString(),
     tool: { name: input.call.name, ...(input.source ? { source: input.source } : {}) },
-    input: summarize(input.call.input, 0, new WeakSet()),
+    input: summarizeJsonValue(input.call.input),
     ...(input.reviewDecision ? { reviewDecision: input.reviewDecision } : {}),
     ...(input.userChoice ? { userChoice: input.userChoice } : {}),
   };

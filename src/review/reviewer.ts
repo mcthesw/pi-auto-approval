@@ -24,6 +24,11 @@ export class ReviewUnavailableError extends Error {
 
 class InertReviewResourceLoader implements ResourceLoader {
   private readonly extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+  private readonly systemPrompt: string;
+
+  constructor(systemPrompt: string) {
+    this.systemPrompt = systemPrompt;
+  }
 
   getExtensions() {
     return this.extensions;
@@ -41,7 +46,7 @@ class InertReviewResourceLoader implements ResourceLoader {
     return { agentsFiles: [] };
   }
   getSystemPrompt() {
-    return REVIEW_SYSTEM_PROMPT;
+    return this.systemPrompt;
   }
   getSystemPromptSource() {
     return undefined;
@@ -66,7 +71,7 @@ export type ReviewSession = {
 export type ReviewerModelOption = { provider: string; modelId: string; label: string };
 
 export type ReviewSessionFactory = {
-  create(config: ReviewerConfig, cwd: string): Promise<ReviewSession>;
+  create(config: ReviewerConfig, cwd: string, systemPrompt?: string): Promise<ReviewSession>;
   availability(config: ReviewerConfig): Promise<string | undefined>;
   availableModels?(): Promise<ReviewerModelOption[]>;
 };
@@ -115,12 +120,12 @@ export class PiReviewSessionFactory implements ReviewSessionFactory {
     return undefined;
   }
 
-  async create(config: ReviewerConfig, _cwd: string): Promise<ReviewSession> {
+  async create(config: ReviewerConfig, _cwd: string, systemPrompt = REVIEW_SYSTEM_PROMPT): Promise<ReviewSession> {
     const unavailable = await this.availability(config);
     if (unavailable) throw new ReviewUnavailableError(unavailable);
     const model = this.runtime.getModel(config.provider, config.modelId);
     if (!model) throw new ReviewUnavailableError(`Reviewer model not found: ${config.provider}/${config.modelId}`);
-    const resourceLoader = new InertReviewResourceLoader();
+    const resourceLoader = new InertReviewResourceLoader(systemPrompt);
     await resourceLoader.reload();
     const { session } = await createAgentSession({
       // Pi appends the session cwd to custom system prompts. Use only the
@@ -176,8 +181,8 @@ function assistantOutcome(messages: readonly unknown[]): AssistantOutcome | unde
   return undefined;
 }
 
-function abortError(): Error {
-  const error = new Error("Automated Review was cancelled");
+function abortError(operation = "Automated Review"): Error {
+  const error = new Error(`${operation} was cancelled`);
   error.name = "AbortError";
   return error;
 }
@@ -185,13 +190,14 @@ function abortError(): Error {
 function createSessionWithAbort(
   pending: Promise<ReviewSession>,
   signal: AbortSignal,
+  operation: string,
 ): Promise<ReviewSession> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
       settled = true;
-      reject(abortError());
+      reject(abortError(operation));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     pending.then(
@@ -231,9 +237,15 @@ export class AutomatedReviewer {
     return this.sessions.availableModels?.() ?? Promise.resolve([]);
   }
 
-  async review(config: ReviewerConfig, request: ReviewRequest, signal?: AbortSignal): Promise<ReviewResult> {
-    if (signal?.aborted) throw abortError();
-    const context = prepareReviewContext(request);
+  async complete(
+    config: ReviewerConfig,
+    cwd: string,
+    systemPrompt: string,
+    prompt: string,
+    operation: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (signal?.aborted) throw abortError(operation);
     const controller = new AbortController();
     let session: ReviewSession | undefined;
     let abortPromise: Promise<void> | undefined;
@@ -259,21 +271,21 @@ export class AutomatedReviewer {
     }, this.timeoutMs);
 
     try {
-      session = await createSessionWithAbort(this.sessions.create(config, request.cwd), controller.signal);
-      await session.prompt(buildReviewPrompt(context), { expandPromptTemplates: false });
-      if (cancelled) throw abortError();
-      if (timedOut) throw new ReviewUnavailableError(`Automated Review timed out after ${this.timeoutMs} ms`);
+      session = await createSessionWithAbort(this.sessions.create(config, cwd, systemPrompt), controller.signal, operation);
+      await session.prompt(prompt, { expandPromptTemplates: false });
+      if (cancelled) throw abortError(operation);
+      if (timedOut) throw new ReviewUnavailableError(`${operation} timed out after ${this.timeoutMs} ms`);
       const outcome = assistantOutcome(session.messages);
-      if (!outcome) throw new ReviewUnavailableError("Reviewer returned no assistant message");
+      if (!outcome) throw new ReviewUnavailableError(`${operation} returned no assistant message`);
       if (outcome.stopReason !== "stop") {
         const detail = outcome.errorMessage ? `: ${outcome.errorMessage}` : "";
-        throw new ReviewUnavailableError(`Reviewer stopped with ${outcome.stopReason ?? "an unknown reason"}${detail}`);
+        throw new ReviewUnavailableError(`${operation} stopped with ${outcome.stopReason ?? "an unknown reason"}${detail}`);
       }
-      if (!outcome.text) throw new ReviewUnavailableError("Reviewer returned no assistant text");
-      return parseReviewResponse(outcome.text);
+      if (!outcome.text) throw new ReviewUnavailableError(`${operation} returned no assistant text`);
+      return outcome.text;
     } catch (error) {
-      if (cancelled || signal?.aborted) throw abortError();
-      if (timedOut) throw new ReviewUnavailableError(`Automated Review timed out after ${this.timeoutMs} ms`);
+      if (cancelled || signal?.aborted) throw abortError(operation);
+      if (timedOut) throw new ReviewUnavailableError(`${operation} timed out after ${this.timeoutMs} ms`);
       if (error instanceof ReviewUnavailableError) throw error;
       throw new ReviewUnavailableError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -283,5 +295,18 @@ export class AutomatedReviewer {
       if (controller.signal.aborted) await abortSession();
       session?.dispose();
     }
+  }
+
+  async review(config: ReviewerConfig, request: ReviewRequest, signal?: AbortSignal): Promise<ReviewResult> {
+    const context = prepareReviewContext(request);
+    const response = await this.complete(
+      config,
+      request.cwd,
+      REVIEW_SYSTEM_PROMPT,
+      buildReviewPrompt(context),
+      "Automated Review",
+      signal,
+    );
+    return parseReviewResponse(response);
   }
 }

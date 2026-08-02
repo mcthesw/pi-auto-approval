@@ -73,7 +73,9 @@ export function validateToolMatcher(matcher: ToolMatcher): string | undefined {
   if (!matcher.tool.trim()) return "matcher tool must not be empty";
   if (isToolWideMatcher(matcher)) {
     if (!matcher.source.source.trim() || !matcher.source.path.trim()) return "tool-wide matcher source must not be empty";
-    if (matcher.source.source === "builtin") return "built-in tools cannot use tool-wide approval";
+    if (matcher.source.source === "builtin" || KNOWN_TOOLS.has(matcher.tool)) {
+      return "standard tools cannot use tool-wide approval";
+    }
     return undefined;
   }
   if (matcher.input.kind === "exact") {
