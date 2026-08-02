@@ -49,7 +49,7 @@ async function customConfirmation(ctx: ExtensionContext, request: UserConfirmati
       validateMatcherText: matcherSyntaxError,
     }),
   );
-  return result ?? { kind: "deny", feedback: "Approval dialog closed" };
+  return result ?? { kind: "cancelled" };
 }
 
 async function standardConfirmation(ctx: ExtensionContext, request: UserConfirmationRequest, matcherText: string): Promise<ConfirmationResult> {
@@ -62,14 +62,14 @@ async function standardConfirmation(ctx: ExtensionContext, request: UserConfirma
   if (selection === "Always approve with rule") {
     const edited = await ctx.ui.editor("Edit Approval Rule matcher JSON", matcherText);
     return edited === undefined
-      ? { kind: "deny", feedback: "Approval Rule editing cancelled" }
+      ? { kind: "cancelled" }
       : { kind: "always", matcherText: edited };
   }
   if (selection === "Deny") {
     const feedback = (await ctx.ui.input("Optional feedback for the Main Agent"))?.trim();
     return { kind: "deny", ...(feedback ? { feedback } : {}) };
   }
-  return { kind: "deny", feedback: "Approval dialog closed" };
+  return { kind: "cancelled" };
 }
 
 export async function confirmToolCall(ctx: ExtensionContext, request: UserConfirmationRequest): Promise<ConfirmationResult & { matcher?: ToolMatcher }> {

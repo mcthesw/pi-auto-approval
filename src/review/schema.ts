@@ -1,10 +1,9 @@
-import type { ToolMatcher } from "../domain.ts";
+import type { ReviewDecision, ToolMatcher } from "../domain.ts";
+export type { ReviewDecision } from "../domain.ts";
 import { parseToolMatcher } from "../config/schema.ts";
 
 const MAX_RESPONSE_CHARS = 16_384;
 const MAX_REASON_CHARS = 2_000;
-
-export type ReviewDecision = "approve" | "deny" | "ask_user";
 
 export type ReviewResult = {
   decision: ReviewDecision;

@@ -57,6 +57,12 @@ Model judgment can be wrong. A Reviewer Approval permits only the current Tool C
 
 Dynamic providers registered by other extensions are not available to the isolated Reviewer runtime in the initial release. Built-in providers and providers configured through Pi's model configuration are supported.
 
+## Friction History boundary
+
+Rule Advisor evidence is stored separately in `~/.pi/agent/auto-approval-friction.json`. Each project retains at most 50 records from the last seven days. Records contain the Tool name, source identity when available, Automated Review decision, resulting user choice, and a lossy JSON summary of the Tool input; they do not contain Tool Results or a conversation transcript.
+
+Before persistence, strings are limited to 256 characters, arrays to 10 items, and nesting to six levels. A complete summarized record larger than 4 KiB is skipped. History corruption or write failure disables that advisory evidence but never changes the current authorization decision.
+
 ## Failure behavior
 
 - Invalid configuration: User Confirmation with UI, denial without UI.

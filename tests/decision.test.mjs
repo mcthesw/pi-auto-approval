@@ -39,7 +39,7 @@ function dependencies(project, store, reviewer) {
     project,
     store,
     reviewer,
-    provenance: "extension",
+    toolSource: { source: "extension", path: "custom.ts" },
     messages: [{ role: "user", content: "do the task" }],
     tool: { name: "custom", sourceInfo: { source: "extension" } },
   };
@@ -66,6 +66,71 @@ test("Automated Review approve and deny decisions are final", async () => {
     const denied = await decideToolCall(context({ cwd: directory }), call, dependencies(project, store, denyReviewer));
     assert.equal(denied.block, true);
     assert.match(denied.reason, /unsafe/);
+  });
+});
+
+test("valid Automated Review and confirmation outcomes produce one Friction Record", async () => {
+  await withDecision(async ({ directory, project, store }) => {
+    await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
+    const records = [];
+    const reviewer = { review: async () => ({ decision: "ask_user", reason: "confirm" }) };
+    const deps = {
+      ...dependencies(project, store, reviewer),
+      recordFriction: async (record) => records.push(record),
+    };
+    const result = await decideToolCall(
+      context({ cwd: directory, hasUI: true, mode: "rpc", select: async () => "Approve once" }),
+      call,
+      deps,
+    );
+    assert.equal(result, undefined);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].reviewDecision, "ask_user");
+    assert.equal(records[0].userChoice, "approve_once");
+    assert.deepEqual(records[0].tool.source, { source: "extension", path: "custom.ts" });
+  });
+});
+
+test("direct project ask_user records user friction without an Automated Review", async () => {
+  await withDecision(async ({ directory, project, store }) => {
+    await store.replace({
+      version: 1,
+      projects: {
+        [project.key]: {
+          approvalRules: [],
+          policyRules: [{
+            id: "confirm-custom",
+            matcher: { tool: "custom", input: { kind: "exact", value: { action: "run" } } },
+            route: "ask_user",
+          }],
+        },
+      },
+    });
+    const records = [];
+    const deps = {
+      ...dependencies(project, store),
+      recordFriction: async (record) => records.push(record),
+    };
+    await decideToolCall(
+      context({ cwd: directory, hasUI: true, mode: "rpc", select: async () => "Deny", input: async () => undefined }),
+      call,
+      deps,
+    );
+    assert.equal(records.length, 1);
+    assert.equal(records[0].reviewDecision, undefined);
+    assert.equal(records[0].userChoice, "deny");
+  });
+});
+
+test("Friction History failures do not alter authorization decisions", async () => {
+  await withDecision(async ({ directory, project, store }) => {
+    await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
+    const reviewer = { review: async () => ({ decision: "approve", reason: "safe" }) };
+    const deps = {
+      ...dependencies(project, store, reviewer),
+      recordFriction: async () => { throw new Error("disk full"); },
+    };
+    assert.equal(await decideToolCall(context({ cwd: directory }), call, deps), undefined);
   });
 });
 

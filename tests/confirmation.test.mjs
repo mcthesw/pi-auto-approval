@@ -57,10 +57,10 @@ test("confirmation component keeps invalid inline matcher open and renders withi
   assert.ok(instance.render(24).every((line) => visibleWidth(line) <= 24));
 });
 
-test("confirmation component treats Escape as denial", () => {
+test("confirmation component distinguishes Escape from denial", () => {
   const { instance, state } = component();
   instance.handleInput("\x1b");
-  assert.deepEqual(state.result, { kind: "deny", feedback: "Approval cancelled" });
+  assert.deepEqual(state.result, { kind: "cancelled" });
 });
 
 test("RPC confirmation validates edited proposal and retries mismatches", async () => {

@@ -4,7 +4,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 export type ConfirmationResult =
   | { kind: "approve_once" }
   | { kind: "always"; matcherText: string }
-  | { kind: "deny"; feedback?: string };
+  | { kind: "deny"; feedback?: string }
+  | { kind: "cancelled" };
 
 type Theme = ExtensionContext["ui"]["theme"];
 
@@ -53,7 +54,7 @@ export class ApprovalConfirmationComponent implements Component {
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
-      this.done({ kind: "deny", feedback: "Approval cancelled" });
+      this.done({ kind: "cancelled" });
       return;
     }
     if (matchesKey(data, Key.up)) {

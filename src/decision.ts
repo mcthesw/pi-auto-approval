@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ProjectConfig, ToolCall, ToolMatcher, ToolSourceIdentity } from "./domain.ts";
+import type {
+  FrictionRecord,
+  ProjectConfig,
+  ReviewDecision,
+  ToolCall,
+  ToolMatcher,
+  ToolSourceIdentity,
+  UserConfirmationChoice,
+} from "./domain.ts";
 import { exactMatcherFor, matchesToolCall, type MatcherContext } from "./matchers.ts";
 import { resolveProjectPath, type ProjectIdentity } from "./project.ts";
 import { tokenizeSingleCommand } from "./policy/bash.ts";
@@ -9,6 +17,7 @@ import type { AutoApprovalConfigStore } from "./config/store.ts";
 import { confirmToolCall } from "./approval/confirmation.ts";
 import type { AutomatedReviewer } from "./review/reviewer.ts";
 import type { ReviewToolMetadata } from "./review/context.ts";
+import { createFrictionRecord } from "./friction/summary.ts";
 
 export type ToolDecision = { block: true; reason: string } | undefined;
 
@@ -34,6 +43,7 @@ export type DecisionDependencies = {
   bash?: BashExecutionGuard;
   messages: readonly unknown[];
   tool?: ReviewToolMetadata;
+  recordFriction?: (record: FrictionRecord) => Promise<void>;
 };
 
 const EMPTY_PROJECT: ProjectConfig = { policyRules: [], approvalRules: [] };
@@ -73,20 +83,27 @@ async function persistApprovalRule(
   }
 }
 
+type ConfirmationOutcome = {
+  decision: ToolDecision;
+  userChoice?: UserConfirmationChoice;
+};
+
 async function requestConfirmation(
   ctx: ExtensionContext,
   call: ToolCall,
   reason: string,
   dependencies: DecisionDependencies,
   proposed?: ToolMatcher,
-): Promise<ToolDecision> {
-  if (ctx.signal?.aborted) return { block: true, reason: "Tool approval was cancelled" };
+): Promise<ConfirmationOutcome> {
+  if (ctx.signal?.aborted) return { decision: { block: true, reason: "Tool approval was cancelled" } };
   const matchContext = matcherContext(dependencies.project, ctx.cwd, dependencies.toolSource);
   const proposal = await chooseProposal(call, proposed, matchContext);
-  if (!ctx.hasUI) return { block: true, reason: `${reason}; no interactive UI is available` };
+  if (!ctx.hasUI) return { decision: { block: true, reason: `${reason}; no interactive UI is available` } };
   if (!proposal) {
     const approved = await ctx.ui.confirm("Tool approval required", `${reason}\n${call.name}: input is not JSON-serializable`);
-    return approved ? undefined : { block: true, reason: `${reason}; denied by user` };
+    return approved
+      ? { decision: undefined, userChoice: "approve_once" }
+      : { decision: { block: true, reason: `${reason}; denied by user` }, userChoice: "deny" };
   }
 
   const result = await confirmToolCall(ctx, {
@@ -96,15 +113,36 @@ async function requestConfirmation(
     validateProposal: async (matcher) =>
       await matchesToolCall(matcher, call, matchContext) ? undefined : "Approval Rule must match the current Tool Call",
   });
-  if (result.kind === "approve_once") return undefined;
+  if (result.kind === "approve_once") return { decision: undefined, userChoice: "approve_once" };
   if (result.kind === "always") {
     if (result.matcher) await persistApprovalRule(ctx, dependencies, result.matcher);
-    return undefined;
+    return { decision: undefined, userChoice: "always" };
+  }
+  if (result.kind === "cancelled") {
+    return { decision: { block: true, reason: `${reason}; approval cancelled` }, userChoice: "cancelled" };
   }
   return {
-    block: true,
-    reason: result.feedback ? `${reason}; denied by user: ${result.feedback}` : `${reason}; denied by user`,
+    decision: {
+      block: true,
+      reason: result.feedback ? `${reason}; denied by user: ${result.feedback}` : `${reason}; denied by user`,
+    },
+    userChoice: "deny",
   };
+}
+
+async function recordFriction(
+  dependencies: DecisionDependencies,
+  call: ToolCall,
+  reviewDecision?: ReviewDecision,
+  userChoice?: UserConfirmationChoice,
+): Promise<void> {
+  const record = createFrictionRecord({ call, source: dependencies.toolSource, reviewDecision, userChoice });
+  if (!record || !dependencies.recordFriction) return;
+  try {
+    await dependencies.recordFriction(record);
+  } catch {
+    // Friction History is advisory evidence and must never affect the authorization decision.
+  }
 }
 
 export async function decideToolCall(
@@ -114,7 +152,7 @@ export async function decideToolCall(
 ): Promise<ToolDecision> {
   const loaded = await dependencies.store.read();
   if (!loaded.ok) {
-    return requestConfirmation(ctx, call, `Auto Approval configuration is invalid: ${loaded.error}`, dependencies);
+    return (await requestConfirmation(ctx, call, `Auto Approval configuration is invalid: ${loaded.error}`, dependencies)).decision;
   }
   const project = loaded.config.projects[dependencies.project.key] ?? EMPTY_PROJECT;
   const policy = await evaluatePolicy(call, {
@@ -128,11 +166,15 @@ export async function decideToolCall(
 
   if (policy.route === "approve") return undefined;
   if (policy.route === "deny") return { block: true, reason: policy.reason };
-  if (policy.route === "ask_user") return requestConfirmation(ctx, call, policy.reason, dependencies);
+  if (policy.route === "ask_user") {
+    const confirmation = await requestConfirmation(ctx, call, policy.reason, dependencies);
+    await recordFriction(dependencies, call, undefined, confirmation.userChoice);
+    return confirmation.decision;
+  }
 
   if (!loaded.config.reviewer || !dependencies.reviewer) {
     const reason = dependencies.reviewerUnavailableReason ?? "Automated Review is not configured";
-    return requestConfirmation(ctx, call, reason, dependencies);
+    return (await requestConfirmation(ctx, call, reason, dependencies)).decision;
   }
 
   try {
@@ -148,18 +190,26 @@ export async function decideToolCall(
       ctx.signal,
     );
     notifyReviewDecision(ctx, call, review.decision, review.reason);
-    if (review.decision === "approve") return undefined;
-    if (review.decision === "deny") return { block: true, reason: `Automated Review denied the Tool Call: ${review.reason}` };
-    return requestConfirmation(ctx, call, review.reason, dependencies, review.approvalRuleProposal);
+    if (review.decision === "approve") {
+      await recordFriction(dependencies, call, "approve");
+      return undefined;
+    }
+    if (review.decision === "deny") {
+      await recordFriction(dependencies, call, "deny");
+      return { block: true, reason: `Automated Review denied the Tool Call: ${review.reason}` };
+    }
+    const confirmation = await requestConfirmation(ctx, call, review.reason, dependencies, review.approvalRuleProposal);
+    await recordFriction(dependencies, call, "ask_user", confirmation.userChoice);
+    return confirmation.decision;
   } catch (error) {
     if (ctx.signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
       return { block: true, reason: "Automated Review was cancelled" };
     }
-    return requestConfirmation(
+    return (await requestConfirmation(
       ctx,
       call,
       `Automated Review unavailable: ${error instanceof Error ? error.message : String(error)}`,
       dependencies,
-    );
+    )).decision;
   }
 }

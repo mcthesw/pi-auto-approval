@@ -9,6 +9,7 @@ import { AutomatedReviewer, PiReviewSessionFactory } from "./src/review/reviewer
 import type { ReviewToolMetadata } from "./src/review/context.ts";
 import { openAutoApprovalSettings } from "./src/ui/settings.ts";
 import { toolSourceIdentity } from "./src/tool-identity.ts";
+import { FrictionHistoryStore, frictionHistoryFile } from "./src/friction/store.ts";
 
 const STATUS_KEY = "auto-approval";
 
@@ -38,8 +39,10 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
   return function autoApproval(pi: ExtensionAPI): void {
     const agentDir = options.agentDir ?? getAgentDir();
     const store = new AutoApprovalConfigStore(autoApprovalConfigFile(agentDir));
+    const frictionStore = new FrictionHistoryStore(frictionHistoryFile(agentDir));
     let reviewer: AutomatedReviewer | undefined;
     let reviewerInitializationError: string | undefined;
+    let frictionWarningShown = false;
 
     const initializeReviewer = async (): Promise<AutomatedReviewer | undefined> => {
       if (reviewer) return reviewer;
@@ -112,6 +115,19 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
         bash,
         messages,
         tool: reviewMetadata(tool),
+        recordFriction: async (record) => {
+          try {
+            await frictionStore.append(project.key, record);
+          } catch (error) {
+            if (!frictionWarningShown && ctx.hasUI) {
+              frictionWarningShown = true;
+              ctx.ui.notify(
+                `Rule Advisor history is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+                "warning",
+              );
+            }
+          }
+        },
       });
     } catch (error) {
       const reason = `Pi Auto Approval failed closed: ${error instanceof Error ? error.message : String(error)}`;

@@ -73,6 +73,26 @@ export type AutoApprovalConfig = {
   projects: Record<string, ProjectConfig>;
 };
 
+export type ReviewDecision = "approve" | "deny" | "ask_user";
+export type UserConfirmationChoice = "approve_once" | "always" | "deny" | "cancelled";
+
+export type FrictionRecord = {
+  id: string;
+  timestamp: string;
+  tool: {
+    name: string;
+    source?: ToolSourceIdentity;
+  };
+  input: JsonValue;
+  reviewDecision?: ReviewDecision;
+  userChoice?: UserConfirmationChoice;
+};
+
+export type FrictionHistory = {
+  version: 1;
+  projects: Record<string, FrictionRecord[]>;
+};
+
 export const EMPTY_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({
   policyRules: [],
   approvalRules: [],
