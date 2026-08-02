@@ -9,7 +9,14 @@ import type {
   ToolSourceIdentity,
   UserConfirmationChoice,
 } from "./domain.ts";
-import { exactMatcherFor, isToolWideMatcher, matchesToolCall, type MatcherContext } from "./matchers.ts";
+import {
+  exactMatcherFor,
+  isStandardToolName,
+  isToolWideMatcher,
+  matchesToolCall,
+  validateToolMatcher,
+  type MatcherContext,
+} from "./matchers.ts";
 import { resolveProjectPath, type ProjectIdentity } from "./project.ts";
 import { tokenizeSingleCommand } from "./policy/bash.ts";
 import { evaluatePolicy, type BashExecutionGuard } from "./policy/engine.ts";
@@ -18,6 +25,7 @@ import { confirmToolCall } from "./approval/confirmation.ts";
 import type { AutomatedReviewer } from "./review/reviewer.ts";
 import type { ReviewToolMetadata } from "./review/context.ts";
 import { createFrictionRecord } from "./friction/summary.ts";
+import { runWithAsyncLoader } from "./ui/async-loader.ts";
 
 export type ToolDecision = { block: true; reason: string } | undefined;
 
@@ -60,7 +68,12 @@ async function chooseProposal(
   call: ToolCall,
   proposed: ToolMatcher | undefined,
   context: MatcherContext,
+  source?: ToolSourceIdentity,
 ): Promise<ToolMatcher | undefined> {
+  if (source && !isStandardToolName(call.name)) {
+    const toolWide: ToolMatcher = { tool: call.name, source, input: { kind: "any" } };
+    if (!validateToolMatcher(toolWide)) return toolWide;
+  }
   if (proposed && await matchesToolCall(proposed, call, context)) return proposed;
   return exactMatcherFor(call);
 }
@@ -104,7 +117,7 @@ async function requestConfirmation(
 ): Promise<ConfirmationOutcome> {
   if (ctx.signal?.aborted) return { decision: { block: true, reason: "Tool approval was cancelled" } };
   const matchContext = matcherContext(dependencies.project, ctx.cwd, dependencies.toolSource);
-  const proposal = await chooseProposal(call, proposed, matchContext);
+  const proposal = await chooseProposal(call, proposed, matchContext, dependencies.toolSource);
   if (!ctx.hasUI) return { decision: { block: true, reason: `${reason}; no interactive UI is available` } };
   if (!proposal) {
     const approved = await ctx.ui.confirm("Tool approval required", `${reason}\n${call.name}: input is not JSON-serializable`);
@@ -186,17 +199,21 @@ export async function decideToolCall(
   }
 
   try {
-    const review = await dependencies.reviewer.review(
-      loaded.config.reviewer,
-      {
-        toolCall: call,
-        cwd: ctx.cwd,
-        projectRoot: dependencies.project.root,
-        messages: dependencies.messages,
-        tool: dependencies.tool,
-      },
-      ctx.signal,
-    );
+    const outcome = await runWithAsyncLoader(ctx, `Automated Review: ${noticeText(call.name)}…`, (signal) =>
+      dependencies.reviewer!.review(
+        loaded.config.reviewer!,
+        {
+          toolCall: call,
+          cwd: ctx.cwd,
+          projectRoot: dependencies.project.root,
+          messages: dependencies.messages,
+          tool: dependencies.tool,
+        },
+        signal,
+      ));
+    if (outcome.status === "cancelled") return { block: true, reason: "Automated Review was cancelled" };
+    if (outcome.status === "failed") throw outcome.error;
+    const review = outcome.value;
     notifyReviewDecision(ctx, call, review.decision, review.reason);
     if (review.decision === "approve") {
       await recordFriction(dependencies, call, "approve");

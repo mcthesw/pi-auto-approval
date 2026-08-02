@@ -3,6 +3,10 @@ import { minimatch } from "minimatch";
 import type { FieldMatcher, JsonValue, ToolCall, ToolMatcher, ToolSourceIdentity, ToolWideMatcher } from "./domain.ts";
 
 const KNOWN_TOOLS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
+
+export function isStandardToolName(name: string): boolean {
+  return KNOWN_TOOLS.has(name);
+}
 const PATH_FIELDS = new Map<string, ReadonlySet<string>>([
   ["read", new Set(["path"])],
   ["write", new Set(["path"])],

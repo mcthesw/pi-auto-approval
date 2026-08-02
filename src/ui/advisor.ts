@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutoApprovalConfig, FrictionRecord, ToolMatcher } from "../domain.ts";
 import type { AutoApprovalConfigStore } from "../config/store.ts";
 import type { FrictionHistoryStore } from "../friction/store.ts";
 import type { RuleAdvisor, AdvisorSuggestion } from "../advisor/advisor.ts";
 import type { AdvisorSkillSummary, AdvisorToolMetadata } from "../advisor/prompt.ts";
-import { isToolWideMatcher } from "../matchers.ts";
+import { isToolWideMatcher, validateToolMatcher } from "../matchers.ts";
 import { AdvisorCandidateListComponent, type AdvisorListResult } from "./advisor-component.ts";
 import { editApprovalRule, matcherDetails, matcherSummary, type RuleScope } from "./rule-editor.ts";
+import { runWithAsyncLoader } from "./async-loader.ts";
 
 export type AdvisorUiDependencies = {
   store: AutoApprovalConfigStore;
@@ -27,6 +27,7 @@ type CandidateState = {
   scope: RuleScope;
   selected: boolean;
   edited: boolean;
+  replacements: Array<{ id: string; summary: string }>;
 };
 
 function canonical(value: unknown): string {
@@ -53,26 +54,6 @@ function hasCounterevidence(suggestion: AdvisorSuggestion, records: Map<string, 
   });
 }
 
-async function runWithLoader<T>(ctx: ExtensionContext, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const controller = new AbortController();
-  const unsubscribe = ctx.mode === "tui"
-    ? ctx.ui.onTerminalInput((data) => {
-      if (!matchesKey(data, Key.escape)) return undefined;
-      controller.abort();
-      return { consume: true };
-    })
-    : undefined;
-  ctx.ui.setWorkingMessage("Rule Advisor is reviewing approval friction… (Esc to cancel)");
-  ctx.ui.setWorkingVisible(true);
-  try {
-    return await operation(controller.signal);
-  } finally {
-    unsubscribe?.();
-    ctx.ui.setWorkingVisible(false);
-    ctx.ui.setWorkingMessage();
-  }
-}
-
 async function showDetail(
   ctx: ExtensionContext,
   candidate: CandidateState,
@@ -94,8 +75,15 @@ async function showDetail(
     stats.calls
       ? `Advisor evidence: ${stats.calls} calls · ${stats.userConfirmations} user confirmations · ${stats.automatedReviews} AI reviews`
       : "Advisor evidence: No observed calls (Tool Catalog suggestion)",
+    ...(candidate.scope === "global" ? ["Warning: this proposal authorizes the Tool across all projects."] : []),
+    ...(candidate.replacements.length
+      ? [
+          `Optimization: replaces ${candidate.replacements.length} existing Project Approval Rule(s):`,
+          ...candidate.replacements.map((rule) => `  ${rule.id}: ${rule.summary}`),
+        ]
+      : []),
     ...(counterevidence ? ["Warning: cited evidence includes ask_user, deny, or cancelled outcomes."] : []),
-    ...(candidate.edited ? ["Statistics refer to the original suggestion before editing."] : []),
+    ...(candidate.edited ? ["Statistics and replacement targets refer to the original suggestion before editing."] : []),
     ...(evidence.length ? ["", "Recent evidence:", ...evidence.map((item) => `  ${item}`)] : []),
   ].join("\n");
   const action = await ctx.ui.select(detail, [candidate.selected ? "Unselect" : "Select", "Edit rule", "Back"]);
@@ -132,6 +120,8 @@ async function reviewInTui(
         summary: matcherSummary(candidate.matcher),
         stats: candidate.suggestion.stats,
         selected: candidate.selected,
+        scope: candidate.scope,
+        replaces: candidate.suggestion.replacesRuleIds.length,
         warning: hasCounterevidence(candidate.suggestion, records),
       })),
       done,
@@ -153,7 +143,7 @@ async function reviewWithMenus(
   for (;;) {
     const labels = [
       ...candidates.map((candidate, index) =>
-        `${candidate.selected ? "[x]" : "[ ]"} ${index + 1}. ${matcherSummary(candidate.matcher)} · Calls ${candidate.suggestion.stats.calls}${hasCounterevidence(candidate.suggestion, records) ? " · counterevidence" : ""}`),
+        `${candidate.selected ? "[x]" : "[ ]"} ${index + 1}. ${matcherSummary(candidate.matcher)} · ${candidate.scope}${candidate.suggestion.replacesRuleIds.length ? ` · replaces ${candidate.suggestion.replacesRuleIds.length}` : ""} · Calls ${candidate.suggestion.stats.calls}${hasCounterevidence(candidate.suggestion, records) ? " · counterevidence" : ""}`),
       "Review selected",
       "Cancel",
     ];
@@ -175,23 +165,43 @@ async function persistSelected(
     ctx.ui.notify("No Approval Rule Proposals selected", "info");
     return;
   }
-  const summary = selected.map((candidate) => `• ${matcherSummary(candidate.matcher)} · ${candidate.scope}`).join("\n");
+  const summary = selected.flatMap((candidate) => [
+    `• ${matcherSummary(candidate.matcher)} · ${candidate.scope}${candidate.replacements.length ? ` · replaces ${candidate.replacements.length}` : ""}`,
+    ...candidate.replacements.map((rule) => `    remove ${rule.id}: ${rule.summary}`),
+  ]).join("\n");
   if (!await ctx.ui.confirm("Save Approval Rules?", summary)) return;
   let added = 0;
   try {
     await dependencies.store.update((config) => {
       const project = (config.projects[dependencies.projectKey] ??= { policyRules: [], approvalRules: [] });
-      const existing = new Set([
-        ...project.approvalRules.map((rule) => canonical(rule.matcher)),
-        ...config.globalApprovalRules.map((rule) => canonical(rule.matcher)),
-      ]);
       for (const candidate of selected) {
+        const replacementIds = new Set(candidate.suggestion.replacesRuleIds);
+        const replacements = project.approvalRules.filter((rule) =>
+          replacementIds.has(rule.id) && rule.matcher.tool === candidate.matcher.tool);
+        if (replacements.length !== replacementIds.size) continue;
+        if (replacementIds.size && (!isToolWideMatcher(candidate.matcher)
+          || replacements.some((rule) => rule.matcher.input.kind !== "exact"))) continue;
+        if (validateToolMatcher(candidate.matcher)) continue;
+        const matcher = candidate.matcher;
+        if (isToolWideMatcher(matcher)) {
+          const currentTool = dependencies.tools.find((tool) => tool.name === matcher.tool
+            && tool.source?.source === matcher.source.source
+            && tool.source?.path === matcher.source.path);
+          if (!currentTool) continue;
+        }
+        const existing = new Set([
+          ...project.approvalRules.filter((rule) => !replacementIds.has(rule.id)).map((rule) => canonical(rule.matcher)),
+          ...config.globalApprovalRules.map((rule) => canonical(rule.matcher)),
+        ]);
         const key = canonical(candidate.matcher);
         if (existing.has(key)) continue;
-        existing.add(key);
+        if (candidate.scope === "global" && !isToolWideMatcher(candidate.matcher)) continue;
+
+        if (replacementIds.size) {
+          project.approvalRules = project.approvalRules.filter((rule) => !replacementIds.has(rule.id));
+        }
         const rule = { id: randomUUID(), matcher: structuredClone(candidate.matcher) };
-        if (candidate.scope === "global") {
-          if (!isToolWideMatcher(rule.matcher)) continue;
+        if (candidate.scope === "global" && isToolWideMatcher(rule.matcher)) {
           config.globalApprovalRules.push({ ...rule, matcher: rule.matcher });
         } else project.approvalRules.push(rule);
         added += 1;
@@ -219,37 +229,46 @@ export async function openRuleAdvisor(ctx: ExtensionContext, dependencies: Advis
     return;
   }
 
-  let suggestions: AdvisorSuggestion[];
-  try {
-    suggestions = await runWithLoader(ctx, (signal) => dependencies.advisor!.suggest(
-      loaded.config.reviewer!,
-      {
-        projectKey: dependencies.projectKey,
-        projectRoot: dependencies.projectRoot,
-        records: history.records,
-        config: loaded.config,
-        tools: dependencies.tools,
-        skills: dependencies.skills,
-      },
-      signal,
-    ));
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") ctx.ui.notify("Rule Advisor cancelled", "info");
-    else ctx.ui.notify(`Rule Advisor failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+  const outcome = await runWithAsyncLoader(ctx, "Rule Advisor: analyzing approval friction…", (signal) => dependencies.advisor!.suggest(
+    loaded.config.reviewer!,
+    {
+      projectKey: dependencies.projectKey,
+      projectRoot: dependencies.projectRoot,
+      records: history.records,
+      config: loaded.config,
+      tools: dependencies.tools,
+      skills: dependencies.skills,
+    },
+    signal,
+  ));
+  if (outcome.status === "cancelled") {
+    ctx.ui.notify("Rule Advisor cancelled", "info");
     return;
   }
+  if (outcome.status === "failed") {
+    ctx.ui.notify(`Rule Advisor failed: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`, "error");
+    return;
+  }
+  const suggestions = outcome.value;
   if (!suggestions.length) {
     ctx.ui.notify("Rule Advisor found no worthwhile Approval Rule Proposals", "info");
     return;
   }
 
   const records = new Map(history.records.map((record) => [record.id, record]));
+  const projectRules = new Map(
+    (loaded.config.projects[dependencies.projectKey]?.approvalRules ?? []).map((rule) => [rule.id, rule]),
+  );
   const candidates = suggestions.map((suggestion) => ({
     suggestion,
     matcher: structuredClone(suggestion.matcher),
-    scope: "project" as const,
+    scope: suggestion.scope,
     selected: false,
     edited: false,
+    replacements: suggestion.replacesRuleIds.flatMap((id) => {
+      const rule = projectRules.get(id);
+      return rule ? [{ id, summary: matcherSummary(rule.matcher) }] : [];
+    }),
   }));
   const proceed = ctx.mode === "tui"
     ? await reviewInTui(ctx, candidates, records, dependencies.tools)

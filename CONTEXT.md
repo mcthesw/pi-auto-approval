@@ -77,11 +77,11 @@ A bounded project-scoped collection of recent **Friction Records** used to ident
 _Avoid_: Approval list, full transcript
 
 **Rule Advisor**:
-An automated recommender that evaluates **Friction History** and produces zero or more **Approval Rule Proposals** without granting permission.
+An automated recommender that evaluates **Friction History** and existing rules, then proposes additions or consolidations without granting permission.
 _Avoid_: Review Agent, automatic rule writer
 
 **Approval Rule Proposal**:
-An automatically generated matcher that remains inactive until the user reviews and accepts it.
+An automatically generated matcher and scope that may supersede narrower existing rules, and remains inactive until the user reviews and accepts it.
 _Avoid_: Automatic rule, implicit authorization
 
 **Approval Rule**:
@@ -89,15 +89,15 @@ A user-accepted, editable matcher that authoritatively approves matching **Tool 
 _Avoid_: Safety policy, implicit permission
 
 **Tool-wide Approval Rule**:
-An **Approval Rule** that approves every input for one non-built-in **Tool Identity**.
-_Avoid_: Unbound tool permission, built-in wildcard
+An **Approval Rule** that approves every input for one non-standard **Tool Identity**.
+_Avoid_: Unbound tool permission, standard-tool wildcard
 
 ## Relationships
 
 - A **Project Scope** contains zero or more project-specific **Approval Rules**.
 - The **Global Scope** contains zero or more **Tool-wide Approval Rules** and no other rule kind.
 - A **Tool Identity** belongs to one current tool source.
-- A **Tool-wide Approval Rule** applies to exactly one non-built-in **Tool Identity** and belongs to either one **Project Scope** or the **Global Scope**.
+- A **Tool-wide Approval Rule** applies to exactly one non-standard **Tool Identity** and belongs to either one **Project Scope** or the **Global Scope**.
 - An **Approval Policy** contains one or more ordered **Policy Rules**.
 - A **Tool Call** may be classified by an **Approval Policy** or matched by an **Approval Rule**.
 - One **Review Context** belongs to exactly one **Tool Call**.
@@ -107,12 +107,12 @@ _Avoid_: Unbound tool permission, built-in wildcard
 - An eligible **Tool Call** that incurs **Approval Friction** may produce one **Friction Record** in its **Project Scope**.
 - A **Friction Record** retains both the review decision and resulting user choice when both occur.
 - A **Friction History** contains zero or more recent **Friction Records** from exactly one **Project Scope**.
-- A **Rule Advisor** evaluates one **Friction History** and may produce zero or more **Approval Rule Proposals**.
+- A **Rule Advisor** evaluates one **Friction History** and current rules, then may propose new rules or consolidation of narrower project rules.
 - An **Approval** applies to exactly one **Tool Call**.
 - A **Denial** applies to exactly one **Tool Call** and may carry **Denial Feedback**.
 - A **User Confirmation** produces an **Approval**, a **Denial**, or an **Approval Rule** from the user.
 - A **User Confirmation** may present one editable **Approval Rule Proposal**.
-- An accepted **Approval Rule Proposal** becomes an **Approval Rule**.
+- An accepted **Approval Rule Proposal** becomes an **Approval Rule** and may atomically supersede the narrower project rules named by the proposal.
 - An **Approval Rule** applies to zero or more future matching **Tool Calls** in either one **Project Scope** or the **Global Scope**.
 - A project **Approval Policy** takes precedence over **Global Scope** rules, while project-specific **Approval Rules** remain authoritative within their **Project Scope**.
 

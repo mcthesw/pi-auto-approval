@@ -1,4 +1,4 @@
-import type { ReviewerConfig, ToolMatcher } from "../domain.ts";
+import type { ReviewerConfig } from "../domain.ts";
 import type { AutomatedReviewer } from "../review/reviewer.ts";
 import { buildAdvisorPrompt, ADVISOR_SYSTEM_PROMPT, type AdvisorRequest } from "./prompt.ts";
 import { parseAdvisorResponse, type ApprovalRuleProposal } from "./schema.ts";
@@ -19,10 +19,7 @@ export class RuleAdvisor {
   }
 
   async suggest(config: ReviewerConfig, request: AdvisorRequest, signal?: AbortSignal): Promise<AdvisorSuggestion[]> {
-    const existingMatchers: ToolMatcher[] = [
-      ...(request.config.projects[request.projectKey]?.approvalRules ?? []).map((rule) => rule.matcher),
-      ...request.config.globalApprovalRules.map((rule) => rule.matcher),
-    ];
+    const projectApprovalRules = request.config.projects[request.projectKey]?.approvalRules ?? [];
     const response = await this.reviewer.complete(
       config,
       request.projectRoot,
@@ -34,7 +31,8 @@ export class RuleAdvisor {
     const proposals = parseAdvisorResponse(response, {
       records: request.records,
       tools: request.tools.map((tool) => ({ name: tool.name, ...(tool.source ? { source: tool.source } : {}) })),
-      existingMatchers,
+      projectApprovalRules,
+      globalMatchers: request.config.globalApprovalRules.map((rule) => rule.matcher),
     });
     const records = new Map(request.records.map((record) => [record.id, record]));
     return proposals

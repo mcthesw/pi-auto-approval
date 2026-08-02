@@ -23,34 +23,87 @@ const records = [
     reviewDecision: "approve",
   },
 ];
+const customSource = { source: "extension", path: "custom" };
 const tools = [
-  { name: "custom", source: { source: "extension", path: "custom" } },
+  { name: "custom", source: customSource },
   { name: "context7_query-docs", source },
+  { name: "bash", source: { source: "builtin", path: "<builtin:bash>" } },
 ];
 
 function response(proposals) {
   return JSON.stringify({ proposals });
 }
 
-test("Advisor response validates evidence, current Tool Identity, and duplicate rules", () => {
+test("Advisor response validates consolidation, scope, evidence, and current Tool Identity", () => {
   const exact = { tool: "custom", input: { kind: "exact", value: { operation: "read" } } };
+  const existingRule = { id: "old-custom", matcher: exact };
+  const consolidated = { tool: "custom", source: customSource, input: { kind: "any" } };
   const toolWide = { tool: "context7_query-docs", source, input: { kind: "any" } };
   const proposals = parseAdvisorResponse(response([
-    { matcher: exact, rationale: "Repeated read", supportingRecordIds: ["r1", "r2"] },
-    { matcher: toolWide, rationale: "Read-only docs", supportingRecordIds: [] },
-  ]), { records, tools, existingMatchers: [exact] });
-  assert.deepEqual(proposals, [{ matcher: toolWide, rationale: "Read-only docs", supportingRecordIds: [] }]);
+    {
+      matcher: consolidated,
+      scope: "global",
+      rationale: "Replace volatile snapshots",
+      supportingRecordIds: ["r1", "r2"],
+      replacesRuleIds: [existingRule.id],
+    },
+    { matcher: toolWide, scope: "project", rationale: "Read-only docs", supportingRecordIds: [], replacesRuleIds: [] },
+  ]), { records, tools, projectApprovalRules: [existingRule], globalMatchers: [] });
+  assert.equal(proposals[0].scope, "global");
+  assert.deepEqual(proposals[0].replacesRuleIds, [existingRule.id]);
 
-  assert.throws(() => parseAdvisorResponse(response([
-    { matcher: exact, rationale: "Missing evidence", supportingRecordIds: ["gone"] },
-  ]), { records, tools, existingMatchers: [] }), AdvisorResponseError);
-  assert.throws(() => parseAdvisorResponse(response([
+  const filtered = parseAdvisorResponse(response([
+    {
+      matcher: { tool: "bash", source: { source: "builtin", path: "<builtin:bash>" }, input: { kind: "any" } },
+      scope: "global",
+      rationale: "Invalid standard Tool-wide matcher",
+      supportingRecordIds: [],
+      replacesRuleIds: [],
+    },
+    {
+      matcher: { tool: "bash", input: { kind: "exact", value: { command: "echo ok" } } },
+      scope: "project",
+      rationale: "Missing evidence",
+      supportingRecordIds: ["gone"],
+      replacesRuleIds: [],
+    },
+    { matcher: toolWide, scope: "project", rationale: "Valid remainder", supportingRecordIds: [], replacesRuleIds: [] },
+  ]), { records, tools, projectApprovalRules: [], globalMatchers: [] });
+  assert.deepEqual(filtered, [{
+    matcher: toolWide,
+    scope: "project",
+    rationale: "Valid remainder",
+    supportingRecordIds: [],
+    replacesRuleIds: [],
+  }]);
+
+  assert.deepEqual(parseAdvisorResponse(response([
+    {
+      matcher: consolidated,
+      scope: "project",
+      rationale: "Invalid replacement",
+      supportingRecordIds: ["r1"],
+      replacesRuleIds: ["wide-rule"],
+    },
     {
       matcher: { tool: "context7_query-docs", source: { source: "extension", path: "replacement" }, input: { kind: "any" } },
+      scope: "global",
       rationale: "Wrong source",
       supportingRecordIds: [],
+      replacesRuleIds: [],
     },
-  ]), { records, tools, existingMatchers: [] }), /current Tool/);
+  ]), {
+    records,
+    tools,
+    projectApprovalRules: [{ id: "wide-rule", matcher: consolidated }],
+    globalMatchers: [],
+  }), []);
+  assert.throws(() => parseAdvisorResponse("[]", {
+    records,
+    tools,
+    projectApprovalRules: [],
+    globalMatchers: [],
+  }), AdvisorResponseError);
 });
 
 test("Rule Advisor uses an isolated prompt and sorts by deterministic friction counts", async () => {
@@ -61,13 +114,17 @@ test("Rule Advisor uses an isolated prompt and sorts by deterministic friction c
       return response([
         {
           matcher: { tool: "context7_query-docs", source, input: { kind: "any" } },
+          scope: "project",
           rationale: "Read-only docs",
           supportingRecordIds: [],
+          replacesRuleIds: [],
         },
         {
-          matcher: { tool: "custom", input: { kind: "exact", value: { operation: "read" } } },
+          matcher: { tool: "custom", source: customSource, input: { kind: "any" } },
+          scope: "global",
           rationale: "Repeated read",
           supportingRecordIds: ["r1", "r2"],
+          replacesRuleIds: [],
         },
       ]);
     },

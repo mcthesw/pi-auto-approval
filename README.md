@@ -52,7 +52,7 @@ When a call needs confirmation, choose one of:
 - **Always approve** — review and edit the proposed structured matcher before saving it
 - **Deny** — optionally add feedback for the Main Agent
 
-Accepted rules default to the current project. A Tool-wide rule for one non-standard Tool Identity can be explicitly switched to Global Scope. A rule proposed by the Review Agent or Rule Advisor is inert until you explicitly accept it.
+Accepted rules default to the current project. For a non-standard Tool with a reliable source identity, Always approve defaults to a source-bound Tool-wide matcher instead of a volatile exact input snapshot. A Tool-wide rule can be explicitly switched to Global Scope. A rule proposed by the Review Agent or Rule Advisor is inert until you explicitly accept it.
 
 ## Configuration
 
@@ -128,13 +128,13 @@ Each review creates a fresh in-memory Pi SDK session with:
 - explicit cwd, project root, and limited tool metadata;
 - a strict `approve`, `deny`, or `ask_user` JSON response.
 
-The transcript, tool metadata, and project content are labeled as untrusted evidence. Recent user intent and bounded Pi compaction summaries are supplied separately so long-running sessions retain the agreed task context. Interactive sessions immediately show each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
+The transcript, tool metadata, and project content are labeled as untrusted evidence. Recent user intent and bounded Pi compaction summaries are supplied separately so long-running sessions retain the agreed task context. Interactive sessions show a cancellable review loader, then display each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
 
 ## Rule Advisor
 
-`/auto-approval` can manually run an isolated Rule Advisor. It reviews up to 50 Friction Records from the last seven days, current rules, current Tool metadata, and skill names/descriptions, then returns at most 10 inactive Approval Rule Proposals. Candidates start unselected; the user can inspect evidence counts, edit a human-readable matcher, choose Project or eligible Global scope, and confirm one atomic save.
+`/auto-approval` can manually run an isolated Rule Advisor. It reviews up to 50 Friction Records from the last seven days, current rules, current Tool metadata, and skill names/descriptions, then returns at most 10 inactive Approval Rule Proposals. It can add rules or consolidate volatile external-Tool exact rules into one source-bound Tool-wide rule. The Advisor may recommend Project or eligible Global Scope, but candidates start unselected and show every rule they would replace before one atomic save.
 
-Friction History is stored separately in `~/.pi/agent/auto-approval-friction.json`. Inputs are summarized before persistence (256-character strings, 10 array items, six levels, 4 KiB per record); Tool Results and conversation transcripts are never stored. The Advisor also supports cold-start suggestions for clearly low-risk external tools from the current Tool Catalog.
+Friction History is stored separately in `~/.pi/agent/auto-approval-friction.json`. Inputs are summarized before persistence (256-character strings, 10 array items, six levels, 4 KiB per record); Tool Results and conversation transcripts are never stored. The Advisor also supports cold-start suggestions for clearly low-risk external tools from the current Tool Catalog. The Global Tool picker provides fuzzy search over the current catalog.
 
 See [`docs/security.md`](docs/security.md) for the trust boundary and known limitations, [`CONTEXT.md`](CONTEXT.md) for project language, and [`docs/adr`](docs/adr) for architectural decisions.
 

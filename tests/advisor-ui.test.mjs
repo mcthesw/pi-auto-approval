@@ -18,7 +18,16 @@ async function withStore(fn) {
 test("RPC Rule Advisor keeps candidates unselected and atomically saves an explicitly global Tool-wide rule", async () => {
   await withStore(async (store, directory) => {
     const reviewer = { provider: "test", modelId: "advisor", thinkingLevel: "low" };
-    await store.replace({ version: 1, reviewer, projects: {} });
+    const projectKey = path.normalize(directory);
+    const oldRule = {
+      id: "old-exact",
+      matcher: { tool: "context7_query-docs", input: { kind: "exact", value: { query: "Rust" } } },
+    };
+    await store.replace({
+      version: 1,
+      reviewer,
+      projects: { [projectKey]: { policyRules: [], approvalRules: [oldRule] } },
+    });
     const source = { source: "extension", path: "context7" };
     const matcher = { tool: "context7_query-docs", source, input: { kind: "any" } };
     const frictionRecord = {
@@ -32,8 +41,10 @@ test("RPC Rule Advisor keeps candidates unselected and atomically saves an expli
     const advisor = {
       suggest: async () => [{
         matcher,
-        rationale: "Read-only documentation lookup",
+        scope: "global",
+        rationale: "Replace the volatile exact lookup rule",
         supportingRecordIds: [frictionRecord.id],
+        replacesRuleIds: [oldRule.id],
         stats: { calls: 1, userConfirmations: 1, automatedReviews: 1 },
       }],
     };
@@ -41,6 +52,7 @@ test("RPC Rule Advisor keeps candidates unselected and atomically saves an expli
     let detailVisits = 0;
     const notifications = [];
     const detailTitles = [];
+    const confirmations = [];
     const ctx = {
       hasUI: true,
       mode: "rpc",
@@ -48,19 +60,19 @@ test("RPC Rule Advisor keeps candidates unselected and atomically saves an expli
         select: async (title, options) => {
           if (title.startsWith("Approval Rule Suggestions")) {
             listVisits += 1;
-            return listVisits <= 2 ? options[0] : "Review selected";
+            return listVisits === 1 ? options[0] : "Review selected";
           }
           if (title.includes("Advisor rationale:")) {
             detailTitles.push(title);
             detailVisits += 1;
-            return detailVisits === 1 ? "Edit rule" : "Select";
-          }
-          if (title.startsWith("Tool: context7_query-docs")) {
-            return options.includes("Scope: Current project") ? "Scope: Current project" : "Save rule";
+            return "Select";
           }
           return undefined;
         },
-        confirm: async () => true,
+        confirm: async (title, message) => {
+          confirmations.push({ title, message });
+          return true;
+        },
         editor: async (_title, value) => value,
         input: async () => undefined,
         notify: (message, level) => notifications.push({ message, level }),
@@ -73,7 +85,7 @@ test("RPC Rule Advisor keeps candidates unselected and atomically saves an expli
       store,
       history: { readProject: async () => ({ ok: true, records: [frictionRecord] }) },
       advisor,
-      projectKey: path.normalize(directory),
+      projectKey,
       projectRoot: directory,
       tools: [{ name: "context7_query-docs", source }],
       skills: [],
@@ -83,9 +95,13 @@ test("RPC Rule Advisor keeps candidates unselected and atomically saves an expli
     if (loaded.ok) {
       assert.equal(loaded.config.globalApprovalRules.length, 1);
       assert.deepEqual(loaded.config.globalApprovalRules[0].matcher, matcher);
-      assert.equal(loaded.config.projects[path.normalize(directory)].approvalRules.length, 0);
+      assert.equal(loaded.config.projects[projectKey].approvalRules.length, 0);
     }
+    assert.match(detailTitles[0], /Warning: this proposal authorizes the Tool across all projects/);
+    assert.match(detailTitles[0], /Optimization: replaces 1/);
     assert.match(detailTitles[0], /Warning: cited evidence includes/);
+    assert.match(confirmations[0].message, /remove old-exact/);
+    assert.match(confirmations[0].message, /Exact/);
     assert.match(notifications.at(-1).message, /Saved 1/);
   });
 });

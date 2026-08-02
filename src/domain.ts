@@ -39,6 +39,8 @@ export type ToolWideMatcher = {
 
 export type ToolMatcher = SpecificToolMatcher | ToolWideMatcher;
 
+export type ApprovalRuleScope = "project" | "global";
+
 export type ApprovalRule = {
   id: string;
   matcher: ToolMatcher;

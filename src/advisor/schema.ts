@@ -1,6 +1,6 @@
-import type { FrictionRecord, ToolMatcher, ToolSourceIdentity } from "../domain.ts";
+import type { ApprovalRule, ApprovalRuleScope, FrictionRecord, ToolMatcher, ToolSourceIdentity } from "../domain.ts";
 import { parseToolMatcher } from "../config/schema.ts";
-import { isToolWideMatcher } from "../matchers.ts";
+import { isStandardToolName, isToolWideMatcher } from "../matchers.ts";
 
 const MAX_RESPONSE_CHARS = 32_768;
 const MAX_PROPOSALS = 10;
@@ -13,8 +13,10 @@ export type AdvisorToolIdentity = {
 
 export type ApprovalRuleProposal = {
   matcher: ToolMatcher;
+  scope: ApprovalRuleScope;
   rationale: string;
   supportingRecordIds: string[];
+  replacesRuleIds: string[];
 };
 
 export class AdvisorResponseError extends Error {
@@ -61,7 +63,8 @@ export function parseAdvisorResponse(
   context: {
     records: readonly FrictionRecord[];
     tools: readonly AdvisorToolIdentity[];
-    existingMatchers: readonly ToolMatcher[];
+    projectApprovalRules: readonly ApprovalRule[];
+    globalMatchers: readonly ToolMatcher[];
   },
 ): ApprovalRuleProposal[] {
   const trimmed = source.trim();
@@ -81,34 +84,76 @@ export function parseAdvisorResponse(
   }
 
   const recordIds = new Set(context.records.map((item) => item.id));
-  const seenMatchers = new Set(context.existingMatchers.map(canonical));
+  const projectRules = new Map(context.projectApprovalRules.map((rule) => [rule.id, rule]));
+  const seenMatchers = new Set([
+    ...context.projectApprovalRules.map((rule) => canonical(rule.matcher)),
+    ...context.globalMatchers.map(canonical),
+  ]);
+  const seenReplacementIds = new Set<string>();
   const proposals: ApprovalRuleProposal[] = [];
   for (let index = 0; index < root.proposals.length; index += 1) {
     const at = `response.proposals[${index}]`;
-    const input = record(root.proposals[index], at);
-    exactKeys(input, ["matcher", "rationale", "supportingRecordIds"], at);
-    let matcher: ToolMatcher;
     try {
-      matcher = parseToolMatcher(input.matcher, `${at}.matcher`);
+      const input = record(root.proposals[index], at);
+      exactKeys(input, ["matcher", "scope", "rationale", "supportingRecordIds", "replacesRuleIds"], at);
+      let matcher: ToolMatcher;
+      try {
+        matcher = parseToolMatcher(input.matcher, `${at}.matcher`);
+      } catch (error) {
+        throw new AdvisorResponseError(error instanceof Error ? error.message : String(error));
+      }
+      if (!toolExists(matcher, context.tools)) throw new AdvisorResponseError(`${at}.matcher does not identify a current Tool`);
+      const tool = context.tools.find((candidate) => candidate.name === matcher.tool);
+      if (tool?.source && !isStandardToolName(matcher.tool) && !isToolWideMatcher(matcher)) {
+        throw new AdvisorResponseError(`${at}.matcher must use source-bound Tool-wide matching for an external Tool`);
+      }
+      if (input.scope !== "project" && input.scope !== "global") {
+        throw new AdvisorResponseError(`${at}.scope must be project or global`);
+      }
+      if (input.scope === "global" && !isToolWideMatcher(matcher)) {
+        throw new AdvisorResponseError(`${at}.scope can be global only for a Tool-wide matcher`);
+      }
+      if (typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.length > MAX_RATIONALE_CHARS) {
+        throw new AdvisorResponseError(`${at}.rationale must be a concise non-empty string`);
+      }
+      if (!Array.isArray(input.supportingRecordIds) || input.supportingRecordIds.length > 50
+        || input.supportingRecordIds.some((id) => typeof id !== "string" || !recordIds.has(id))) {
+        throw new AdvisorResponseError(`${at}.supportingRecordIds must reference retained Friction Records`);
+      }
+      const supportingRecordIds = [...new Set(input.supportingRecordIds as string[])];
+      if (!isToolWideMatcher(matcher) && !supportingRecordIds.length) {
+        throw new AdvisorResponseError(`${at} needs historical evidence for a specific-input matcher`);
+      }
+      if (!Array.isArray(input.replacesRuleIds) || input.replacesRuleIds.length > 50
+        || input.replacesRuleIds.some((id) => typeof id !== "string" || !projectRules.has(id))) {
+        throw new AdvisorResponseError(`${at}.replacesRuleIds must reference current Project Approval Rules`);
+      }
+      const replacesRuleIds = [...new Set(input.replacesRuleIds as string[])];
+      if (replacesRuleIds.some((id) => projectRules.get(id)?.matcher.tool !== matcher.tool)) {
+        throw new AdvisorResponseError(`${at}.replacesRuleIds must target rules for the same Tool`);
+      }
+      if (replacesRuleIds.length && (!isToolWideMatcher(matcher)
+        || replacesRuleIds.some((id) => projectRules.get(id)?.matcher.input.kind !== "exact"))) {
+        throw new AdvisorResponseError(`${at}.replacesRuleIds may only consolidate exact rules into a Tool-wide matcher`);
+      }
+      if (replacesRuleIds.some((id) => seenReplacementIds.has(id))) {
+        throw new AdvisorResponseError(`${at}.replacesRuleIds overlap another proposal`);
+      }
+      const replacedMatcherKeys = new Set(replacesRuleIds.map((id) => canonical(projectRules.get(id)!.matcher)));
+      const key = canonical(matcher);
+      if (seenMatchers.has(key) && !replacedMatcherKeys.has(key)) continue;
+      replacesRuleIds.forEach((id) => seenReplacementIds.add(id));
+      seenMatchers.add(key);
+      proposals.push({
+        matcher,
+        scope: input.scope,
+        rationale: input.rationale.trim(),
+        supportingRecordIds,
+        replacesRuleIds,
+      });
     } catch (error) {
-      throw new AdvisorResponseError(error instanceof Error ? error.message : String(error));
+      if (!(error instanceof AdvisorResponseError)) throw error;
     }
-    if (!toolExists(matcher, context.tools)) throw new AdvisorResponseError(`${at}.matcher does not identify a current Tool`);
-    if (typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.length > MAX_RATIONALE_CHARS) {
-      throw new AdvisorResponseError(`${at}.rationale must be a concise non-empty string`);
-    }
-    if (!Array.isArray(input.supportingRecordIds) || input.supportingRecordIds.length > 50
-      || input.supportingRecordIds.some((id) => typeof id !== "string" || !recordIds.has(id))) {
-      throw new AdvisorResponseError(`${at}.supportingRecordIds must reference retained Friction Records`);
-    }
-    const supportingRecordIds = [...new Set(input.supportingRecordIds as string[])];
-    if (!isToolWideMatcher(matcher) && !supportingRecordIds.length) {
-      throw new AdvisorResponseError(`${at} needs historical evidence for a specific-input matcher`);
-    }
-    const key = canonical(matcher);
-    if (seenMatchers.has(key)) continue;
-    seenMatchers.add(key);
-    proposals.push({ matcher, rationale: input.rationale.trim(), supportingRecordIds });
   }
   return proposals;
 }

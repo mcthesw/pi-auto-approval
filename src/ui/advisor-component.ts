@@ -7,6 +7,8 @@ export type AdvisorListItem = {
   summary: string;
   stats: { calls: number; userConfirmations: number; automatedReviews: number };
   selected: boolean;
+  scope: "project" | "global";
+  replaces: number;
   warning?: boolean;
 };
 
@@ -59,7 +61,9 @@ export class AdvisorCandidateListComponent implements Component {
       const cursor = index === this.cursor ? this.theme.fg("accent", "❯") : " ";
       const checked = this.selected[index] ? this.theme.fg("success", "[x]") : "[ ]";
       const warning = item.warning ? this.theme.fg("warning", " · counterevidence") : "";
-      lines.push(truncateToWidth(`${cursor} ${checked} ${item.summary}${warning}`, width));
+      const optimization = item.replaces ? this.theme.fg("accent", ` · replaces ${item.replaces}`) : "";
+      const scope = item.scope === "global" ? this.theme.fg("warning", " · GLOBAL") : this.theme.fg("dim", " · project");
+      lines.push(truncateToWidth(`${cursor} ${checked} ${item.summary}${scope}${optimization}${warning}`, width));
       lines.push(this.theme.fg("dim", truncateToWidth(
         `      Calls ${item.stats.calls} · User confirmations ${item.stats.userConfirmations} · AI reviews ${item.stats.automatedReviews}`,
         width,

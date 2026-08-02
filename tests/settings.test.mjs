@@ -108,6 +108,40 @@ test("settings UI explicitly adds a current external Tool to Global Approval Rul
   });
 });
 
+test("TUI Global Tool picker filters the current catalog by typing", async () => {
+  await withSettings(async ({ project, store }) => {
+    const source = { source: "sdk", path: "<sdk:todowrite>" };
+    const menus = ["Global Approval Rules", "Add Tool-wide Rule", "Back", "Done"];
+    const ctx = {
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        select: async () => menus.shift(),
+        confirm: async () => true,
+        notify: () => {},
+        custom: async (factory) => await new Promise((resolve) => {
+          const theme = { fg: (_color, text) => text, bold: (text) => text };
+          const component = factory({ requestRender: () => {} }, theme, {}, resolve);
+          component.handleInput("todo");
+          component.handleInput("\r");
+        }),
+      },
+    };
+    await openAutoApprovalSettings(ctx, {
+      store,
+      projectKey: project.key,
+      reviewer,
+      tools: [
+        { name: "context7_query-docs", source: { source: "mcp", path: "context7" } },
+        { name: "todowrite", source },
+      ],
+    });
+    const result = await store.read();
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.config.globalApprovalRules[0].matcher.tool, "todowrite");
+  });
+});
+
 test("settings UI remains usable when Reviewer runtime is unavailable", async () => {
   await withSettings(async ({ project, store }) => {
     const menus = ["Reviewer model: not configured", "Done"];

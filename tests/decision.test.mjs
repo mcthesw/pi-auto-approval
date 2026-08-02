@@ -161,7 +161,7 @@ test("interactive sessions show every Automated Review decision", async () => {
   });
 });
 
-test("Always approve validates and persists a project Approval Rule", async () => {
+test("Always approve replaces volatile external exact proposals with a project Tool-wide Rule", async () => {
   await withDecision(async ({ directory, project, store }) => {
     await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
     const proposal = { tool: "custom", input: { kind: "exact", value: { action: "run" } } };
@@ -178,7 +178,11 @@ test("Always approve validates and persists a project Approval Rule", async () =
     assert.equal(await decideToolCall(ctx, call, dependencies(project, store, reviewer)), undefined);
     const loaded = await store.read();
     assert.equal(loaded.ok, true);
-    if (loaded.ok) assert.deepEqual(loaded.config.projects[project.key].approvalRules[0].matcher, proposal);
+    if (loaded.ok) assert.deepEqual(loaded.config.projects[project.key].approvalRules[0].matcher, {
+      tool: "custom",
+      source: { source: "extension", path: "custom.ts" },
+      input: { kind: "any" },
+    });
     const failingReviewer = { review: async () => { throw new Error("should not run"); } };
     assert.equal(await decideToolCall(context({ cwd: directory }), call, dependencies(project, store, failingReviewer)), undefined);
   });
@@ -216,7 +220,7 @@ test("Always approve persists an explicitly Global Tool-wide Rule in Global Scop
   });
 });
 
-test("a mismatched Reviewer proposal is replaced by the exact current call matcher", async () => {
+test("a mismatched external Reviewer proposal is replaced by a source-bound Tool-wide matcher", async () => {
   await withDecision(async ({ directory, project, store }) => {
     await store.replace({ version: 1, reviewer: reviewerConfig, projects: {} });
     const reviewer = {
@@ -240,7 +244,8 @@ test("a mismatched Reviewer proposal is replaced by the exact current call match
     if (loaded.ok) {
       assert.deepEqual(loaded.config.projects[project.key].approvalRules[0].matcher, {
         tool: "custom",
-        input: { kind: "exact", value: { action: "run" } },
+        source: { source: "extension", path: "custom.ts" },
+        input: { kind: "any" },
       });
     }
   });

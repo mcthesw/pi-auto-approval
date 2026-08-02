@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  DynamicBorder,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
 import type { ApprovalRule, AutoApprovalConfig, PolicyRule, ProjectConfig } from "../domain.ts";
 import { defaultAutoApprovalConfig } from "../domain.ts";
 import { parseAutoApprovalConfig, parsePolicyRule } from "../config/schema.ts";
@@ -204,6 +208,58 @@ async function manageApprovalRules(ctx: ExtensionContext, dependencies: Settings
   }
 }
 
+async function chooseGlobalTool(
+  ctx: ExtensionContext,
+  tools: ReadonlyArray<{ tool: AdvisorToolMetadata; matcher: ApprovalRule["matcher"] }>,
+): Promise<number | undefined> {
+  if (ctx.mode !== "tui") {
+    const labels = tools.map(({ tool }) => `${tool.name} · ${tool.source!.source} · ${tool.source!.path}`);
+    const chosen = await ctx.ui.select("Approve all inputs globally for which Tool?", [...labels, "Cancel"]);
+    const index = labels.indexOf(chosen ?? "");
+    return index >= 0 ? index : undefined;
+  }
+
+  const selected = await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+    const container = new Container();
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    container.addChild(new Text(theme.fg("accent", theme.bold("Search Tool Catalog")), 1, 0));
+    const items: SettingItem[] = tools.map(({ tool }, index) => ({
+      id: String(index),
+      label: tool.name,
+      currentValue: "",
+      values: ["select"],
+      description: `${tool.source!.source} · ${tool.source!.path}`,
+    }));
+    const list = new SettingsList(
+      items,
+      Math.min(items.length, 12),
+      {
+        label: (text, active) => active ? theme.fg("accent", text) : text,
+        value: (text, active) => active ? theme.fg("accent", text) : theme.fg("muted", text),
+        description: (text) => theme.fg("dim", text),
+        cursor: theme.fg("accent", "→ "),
+        hint: (text) => theme.fg("dim", text),
+      },
+      (id) => done(id),
+      () => done(undefined),
+      { enableSearch: true },
+    );
+    container.addChild(list);
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => {
+        list.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
+  if (selected === undefined) return undefined;
+  const index = Number(selected);
+  return Number.isInteger(index) && tools[index] ? index : undefined;
+}
+
 async function manageGlobalApprovalRules(ctx: ExtensionContext, dependencies: SettingsDependencies): Promise<void> {
   for (;;) {
     const result = await dependencies.store.read();
@@ -221,9 +277,8 @@ async function manageGlobalApprovalRules(ctx: ExtensionContext, dependencies: Se
           && rule.matcher.source.path === matcher.source.path);
         return validateToolMatcher(matcher) || exists ? [] : [{ tool, matcher }];
       });
-      const toolLabels = tools.map(({ tool }) => `${tool.name} · ${tool.source!.source} · ${tool.source!.path}`);
-      const chosen = await ctx.ui.select("Approve all inputs globally for which Tool?", [...toolLabels, "Cancel"]);
-      const candidate = tools[toolLabels.indexOf(chosen ?? "")];
+      const candidateIndex = await chooseGlobalTool(ctx, tools);
+      const candidate = candidateIndex === undefined ? undefined : tools[candidateIndex];
       if (candidate && await ctx.ui.confirm("Create Global Tool-wide Approval Rule?", matcherSummary(candidate.matcher))) {
         await mutate(ctx, dependencies.store, (config) => {
           config.globalApprovalRules.push({ id: randomUUID(), matcher: candidate.matcher });
