@@ -73,6 +73,10 @@ test("Bash classifier approves only project-local read-only commands", async () 
       "grep -R TODO src",
       "find src -maxdepth 2 -type f -print",
       "cat src/file.ts",
+      "git log --oneline -5",
+      "git log --first-parent --max-count 10 HEAD~2",
+      "git rev-parse --show-toplevel",
+      "git branch --show-current",
     ]) {
       assert.equal((await classifyBash(command, resolve, async () => true)).safe, true, command);
     }
@@ -94,6 +98,10 @@ test("Bash classifier approves only project-local read-only commands", async () 
       "file -Cm demo.magic",
       "git status --short",
       "git show HEAD",
+      "git log -p -1",
+      "git log --stat -1",
+      "git log --format=oneline -1",
+      "git rev-parse --sq --prefix /tmp HEAD",
       "git branch pwned",
       "git diff --output=patch.txt",
       "git status > status.txt",
@@ -146,15 +154,21 @@ test("built-in policy approves project reads and regular writes but reviews boun
   await withProject(async ({ directory, project, identity }) => {
     const cases = [
       [call("read", { path: "README.md" }), "builtin", "approve"],
+      [call("read", { path: "README.md" }), "sdk", "approve"],
       [call("read", {}), "builtin", "auto_review"],
       [call("grep", { pattern: "x" }), "builtin", "approve"],
       [call("write", { path: "src/new.ts", content: "" }), "builtin", "approve"],
+      [call("edit", { path: "src/lib.ts", edits: [] }), "sdk", "approve"],
+      [call("todowrite", { todos: [] }), "sdk", "auto_review"],
+      [call("ask_user_question", { questions: [] }), "sdk", "auto_review"],
       [call("write", { content: "" }), "builtin", "auto_review"],
       [call("edit", { path: ".git/config" }), "builtin", "auto_review"],
       [call("write", { path: ".pi/extensions/a.ts", content: "" }), "builtin", "auto_review"],
       [call("write", { path: "nested/AGENTS.md", content: "" }), "builtin", "auto_review"],
       [call("read", { path: path.join(directory, "outside") }), "builtin", "auto_review"],
-      [call("read", { path: "README.md" }), "extension", "auto_review"],
+      [call("read", { path: "README.md" }), "extension", "approve"],
+      [call("todowrite", { todos: [] }), "extension", "auto_review"],
+      [call("Agent", { subagent_type: "oracle" }), "sdk", "auto_review"],
       [call("custom", { value: 1 }), "extension", "auto_review"],
     ];
     for (const [toolCall, provenance, expected] of cases) {

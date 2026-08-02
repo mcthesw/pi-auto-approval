@@ -15,6 +15,7 @@ const STATUS_KEY = "auto-approval";
 function toolProvenance(tool: ToolInfo | undefined): ToolProvenance {
   const source = (tool?.sourceInfo as { source?: string } | undefined)?.source;
   if (source === "builtin") return "builtin";
+  if (source === "sdk") return "sdk";
   if (source) return "extension";
   return "unknown";
 }
@@ -107,7 +108,7 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
       const tool = pi.getAllTools().find((candidate) => candidate.name === call.name);
       const provenance = toolProvenance(tool);
       const activeReviewer = await initializeReviewer();
-      const bash = call.name === "bash" && provenance === "builtin"
+      const bash = call.name === "bash"
         ? await inspectBashEnvironment(pi, ctx.cwd, agentDir, project)
         : undefined;
       const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);

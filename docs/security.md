@@ -34,7 +34,7 @@ Sensitive filenames such as `.env` are not guessed by default. Configure a highe
 
 ## Bash boundary
 
-Deterministic Bash approval is deliberately narrow. The classifier rejects unsupported syntax, substitutions, expansions, redirections, background execution, environment assignments, unknown wrappers, unsafe options, and unresolved executables. Git and `file` commands are never deterministically approved because repository/configuration hooks and option combinations can execute programs or write files.
+Deterministic Bash approval is deliberately narrow. The classifier rejects unsupported syntax, substitutions, expansions, redirections, background execution, environment assignments, unknown wrappers, unsafe options, and unresolved executables. Git approval is limited to a small metadata-only subset of `log`, `rev-parse`, and `branch --show-current`; diff-producing operations and other Git commands still require review because repository/configuration helpers can execute programs. The `file` command is never deterministically approved because option combinations can write magic data.
 
 Before deterministic approval, the extension also rejects relevant startup/configuration environment variables, project-local `PATH` entries, Pi `shellCommandPrefix`, and custom `shellPath`. External command resolution is checked with a clean non-interactive Bash lookup and must not resolve inside the project.
 

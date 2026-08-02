@@ -264,6 +264,53 @@ async function classifyRipgrep(argv: string[], resolvePath: BashPathResolver): P
   return patternSeen && pathsStayInside(paths, resolvePath);
 }
 
+function classifyGit(argv: string[]): boolean {
+  const subcommand = argv[1];
+  const args = argv.slice(2);
+
+  if (subcommand === "branch") return args.length === 1 && args[0] === "--show-current";
+  if (subcommand === "rev-parse") {
+    const flags = new Set([
+      "--show-toplevel",
+      "--show-prefix",
+      "--git-dir",
+      "--is-inside-work-tree",
+      "--is-bare-repository",
+      "--abbrev-ref",
+      "--path-format=absolute",
+      "--path-format=relative",
+    ]);
+    return args.length > 0 && args.every((arg) => flags.has(arg) || arg === "HEAD" || /^[0-9a-fA-F]{7,64}$/.test(arg));
+  }
+  if (subcommand !== "log") return false;
+
+  const flags = new Set([
+    "--oneline",
+    "--decorate",
+    "--no-decorate",
+    "--all",
+    "--first-parent",
+    "--merges",
+    "--no-merges",
+    "--reverse",
+    "--topo-order",
+    "--date-order",
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (flags.has(arg)) continue;
+    if (/^-[0-9]+$/.test(arg) || /^--max-count=[0-9]+$/.test(arg)) continue;
+    if (arg === "-n" || arg === "--max-count") {
+      index += 1;
+      if (index >= args.length || !/^[0-9]+$/.test(args[index]!)) return false;
+      continue;
+    }
+    if (arg === "HEAD" || /^HEAD(?:[~^][0-9]*)*$/.test(arg) || /^[0-9a-fA-F]{7,64}$/.test(arg)) continue;
+    return false;
+  }
+  return true;
+}
+
 async function classifyFind(argv: string[], resolvePath: BashPathResolver): Promise<boolean> {
   const args = argv.slice(1);
   const paths: string[] = [];
@@ -306,6 +353,7 @@ async function classifyArgv(
   if (command === "grep") return classifyGrep(argv, resolvePath);
   if (command === "rg") return classifyRipgrep(argv, resolvePath);
   if (command === "find") return classifyFind(argv, resolvePath);
+  if (command === "git") return classifyGit(argv);
   return false;
 }
 

@@ -4,7 +4,7 @@ import { matchesToolCall } from "../matchers.ts";
 import { resolveProjectPath } from "../project.ts";
 import { classifyBash, tokenizeSingleCommand } from "./bash.ts";
 
-export type ToolProvenance = "builtin" | "extension" | "unknown";
+export type ToolProvenance = "builtin" | "sdk" | "extension" | "unknown";
 
 export type PolicyDecision = {
   route: DecisionRoute;
@@ -71,8 +71,6 @@ async function firstMatchingPolicy(
 }
 
 async function builtinDecision(call: ToolCall, context: PolicyEvaluationContext): Promise<PolicyDecision | undefined> {
-  if (context.provenance !== "builtin") return undefined;
-
   if (["read", "grep", "find", "ls"].includes(call.name)) {
     const target = callPath(call);
     if (call.name === "read" && target === undefined) {

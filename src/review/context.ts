@@ -3,8 +3,11 @@ import type { ToolCall } from "../domain.ts";
 const MAX_TOOL_CALL_CHARS = 65_536;
 const MAX_USER_EVIDENCE_CHARS = 30_000;
 const MAX_RECENT_EVIDENCE_CHARS = 20_000;
+const MAX_RECENT_USER_INTENT_CHARS = 12_000;
+const MAX_CONVERSATION_SUMMARY_CHARS = 8_000;
 const MAX_USER_ENTRY_CHARS = 8_000;
 const MAX_OTHER_ENTRY_CHARS = 4_000;
+const MAX_RECENT_USER_INTENT_ENTRIES = 4;
 const MAX_RECENT_NON_USER_ENTRIES = 40;
 const MAX_TOOL_METADATA_CHARS = 8_000;
 
@@ -34,6 +37,8 @@ export type PreparedReviewContext = {
   toolCallJson: string;
   cwd: string;
   projectRoot: string;
+  recentUserIntent: string;
+  conversationSummary: string;
   transcript: string;
   toolMetadata: string;
 };
@@ -76,6 +81,29 @@ function renderMessage(message: unknown): { role: "user" | "assistant" | "toolRe
     return { role: "toolResult", text: `[${tool}] ${textFromContent(input.content, MAX_OTHER_ENTRY_CHARS)}` };
   }
   return undefined;
+}
+
+function buildRecentUserIntent(messages: readonly unknown[]): string {
+  const users = messages
+    .map((message, index) => {
+      const rendered = renderMessage(message);
+      return rendered?.role === "user" ? { index, rendered: `<user>\n${rendered.text}\n</user>` } : undefined;
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+    .slice(-MAX_RECENT_USER_INTENT_ENTRIES);
+  return selectWithinBudget(users, MAX_RECENT_USER_INTENT_CHARS, true)
+    .map((entry) => entry.rendered)
+    .join("\n\n");
+}
+
+function buildConversationSummary(messages: readonly unknown[]): string {
+  const summaries = messages.flatMap((message) => {
+    if (typeof message !== "object" || message === null) return [];
+    const input = message as Record<string, unknown>;
+    if (input.role !== "compactionSummary" && input.role !== "branchSummary") return [];
+    return typeof input.summary === "string" ? [input.summary] : [];
+  });
+  return summaries.length ? truncate(summaries.at(-1)!, MAX_CONVERSATION_SUMMARY_CHARS) : "";
 }
 
 function selectWithinBudget<T extends { rendered: string }>(entries: T[], budget: number, newestFirst = false): T[] {
@@ -126,6 +154,8 @@ export function prepareReviewContext(request: ReviewRequest): PreparedReviewCont
     toolCallJson,
     cwd: request.cwd,
     projectRoot: request.projectRoot,
+    recentUserIntent: buildRecentUserIntent(request.messages),
+    conversationSummary: buildConversationSummary(request.messages),
     transcript: buildTranscript(request.messages),
     toolMetadata: truncate(metadata, MAX_TOOL_METADATA_CHARS),
   };

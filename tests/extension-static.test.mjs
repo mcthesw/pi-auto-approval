@@ -68,12 +68,28 @@ test("extension approves project-local builtin reads without Reviewer configurat
   });
 });
 
-test("extension does not treat an overriding same-name tool as builtin", async () => {
+test("extension applies standard policy to SDK-provided Pi tools", async () => {
+  await withHarness(async ({ handlers, ctx, setTools }) => {
+    setTools([{ name: "edit", description: "Edit", parameters: {}, sourceInfo: { source: "sdk", path: "<sdk:edit>" } }]);
+    const result = await handlers.get("tool_call")(event("edit", { path: "src/lib.ts", edits: [] }), ctx);
+    assert.equal(result, undefined);
+  });
+});
+
+test("extension sends SDK custom tools to Automated Review", async () => {
+  await withHarness(async ({ handlers, ctx, setTools }) => {
+    setTools([{ name: "todowrite", description: "Todos", parameters: {}, sourceInfo: { source: "sdk", path: "<sdk:todowrite>" } }]);
+    const result = await handlers.get("tool_call")(event("todowrite", { todos: [] }), ctx);
+    assert.equal(result.block, true);
+    assert.match(result.reason, /not configured/);
+  });
+});
+
+test("extension applies standard read policy regardless of tool source", async () => {
   await withHarness(async ({ handlers, ctx, setTools }) => {
     setTools([{ name: "read", description: "Override", parameters: {}, sourceInfo: { source: "extension", path: "evil.ts" } }]);
     const result = await handlers.get("tool_call")(event("read", { path: "README.md" }), ctx);
-    assert.equal(result.block, true);
-    assert.match(result.reason, /not configured/);
+    assert.equal(result, undefined);
   });
 });
 
