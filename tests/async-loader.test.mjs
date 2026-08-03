@@ -1,52 +1,42 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { initTheme } from "@earendil-works/pi-coding-agent";
 import { runWithAsyncLoader } from "../src/ui/async-loader.ts";
 
-initTheme("dark", false);
-
-const theme = {
-  fg: (_color, text) => text,
-  bg: (_color, text) => text,
-  bold: (text) => text,
-};
-
-test("TUI async loader renders a compact cancellable status line", async () => {
-  let customOptions;
-  let rendered = [];
+test("TUI async loader shows an animated review widget without replacing the editor", async () => {
+  const widgets = [];
+  let customCalled = false;
   const ctx = {
     mode: "tui",
+    signal: new AbortController().signal,
     ui: {
-      custom: async (factory, options) => {
-        customOptions = options;
-        return await new Promise((resolve) => {
-          let component;
-          const done = (value) => {
-            component.dispose();
-            resolve(value);
-          };
-          component = factory({ requestRender: () => {} }, theme, {}, done);
-          rendered = component.render(80);
-          setImmediate(() => {
-            component.abortController.abort();
-            component.onAbort?.();
-          });
-        });
-      },
+      custom: async () => { customCalled = true; },
+      setWidget: (key, content) => widgets.push({ key, content }),
     },
   };
-  const result = await runWithAsyncLoader(ctx, "Reviewing todowrite…", async (signal) => {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, 1_000);
-      signal.addEventListener("abort", () => {
-        clearTimeout(timer);
-        reject(new DOMException("cancelled", "AbortError"));
-      }, { once: true });
-    });
-    return "unexpected";
-  });
-  assert.equal(result.status, "cancelled");
-  assert.equal(customOptions, undefined);
-  assert.equal(rendered.length, 2);
-  assert.match(rendered.join("\n"), /Reviewing todowrite.*Esc to cancel/);
+  const result = await runWithAsyncLoader(ctx, "Reviewing todowrite…", async () => "done");
+  assert.deepEqual(result, { status: "completed", value: "done" });
+  assert.equal(customCalled, false);
+  assert.equal(widgets[0].key, "auto-approval-review");
+  assert.equal(typeof widgets[0].content, "function");
+  const widget = widgets[0].content(
+    { requestRender: () => {} },
+    { fg: (_color, text) => text },
+  );
+  assert.match(widget.render(80)[0], /Reviewing todowrite/);
+  widget.dispose();
+  assert.deepEqual(widgets.at(-1), { key: "auto-approval-review", content: undefined });
+});
+
+test("async loader reports cancellation from Pi's active abort signal", async () => {
+  const controller = new AbortController();
+  const pending = runWithAsyncLoader(
+    { mode: "tui", signal: controller.signal, ui: { setWidget: () => {} } },
+    "Reviewing…",
+    async (signal) => await new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
+      setTimeout(resolve, 1_000);
+    }),
+  );
+  controller.abort();
+  assert.deepEqual(await pending, { status: "cancelled" });
 });

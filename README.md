@@ -128,7 +128,7 @@ Each review creates a fresh in-memory Pi SDK session with:
 - explicit cwd, project root, and limited tool metadata;
 - a strict `approve`, `deny`, or `ask_user` JSON response.
 
-The transcript, tool metadata, and project content are labeled as untrusted evidence. Recent user intent and bounded Pi compaction summaries are supplied separately so long-running sessions retain the agreed task context. Interactive sessions show a cancellable review loader, then display each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
+The transcript, tool metadata, and project content are labeled as untrusted evidence. Recent user intent and bounded Pi compaction summaries are supplied separately so long-running sessions retain the agreed task context. Interactive sessions show an animated review status above the editor while the normal editor remains available for typing queued messages, then display each Automated Review decision, tool name, and bounded single-line reason; deterministic approvals remain quiet. Reviewer timeout, malformed output, missing configuration, or runtime failure falls back to User Confirmation when UI is available and denial otherwise. Caller cancellation denies without opening another prompt.
 
 ## Rule Advisor
 
