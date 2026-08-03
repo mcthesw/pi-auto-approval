@@ -48,11 +48,11 @@ Project Approval Rules run first, followed by ordered project Policy Rules, sour
 
 When a call needs confirmation, choose one of:
 
-- **Approve once**
+- **Approve once** — selected by default
 - **Always approve** — review and edit the proposed structured matcher before saving it
 - **Deny** — optionally add feedback for the Main Agent
 
-Accepted rules default to the current project. For a non-standard Tool with a reliable source identity, Always approve defaults to a source-bound Tool-wide matcher instead of a volatile exact input snapshot. A Tool-wide rule can be explicitly switched to Global Scope. A rule proposed by the Review Agent or Rule Advisor is inert until you explicitly accept it.
+Accepted rules default to the current project. For a non-standard Tool with a reliable source identity, Always approve defaults to a source-bound Tool-wide matcher instead of a volatile exact input snapshot. A Tool-wide rule can be explicitly switched to Global Scope with ←/→. A rule proposed by the Review Agent or Rule Advisor is inert until you explicitly accept it.
 
 ## Configuration
 
@@ -134,7 +134,7 @@ The transcript, tool metadata, and project content are labeled as untrusted evid
 
 `/auto-approval` can manually run an isolated Rule Advisor. It reviews up to 50 Friction Records from the last seven days, current rules, current Tool metadata, and skill names/descriptions, then returns at most 10 inactive Approval Rule Proposals. It can add rules or consolidate volatile external-Tool exact rules into one source-bound Tool-wide rule. The Advisor may recommend Project or eligible Global Scope, but candidates start unselected and show every rule they would replace before one atomic save.
 
-Friction History is stored separately in `~/.pi/agent/auto-approval-friction.json`. Inputs are summarized before persistence (256-character strings, 10 array items, six levels, 4 KiB per record); Tool Results and conversation transcripts are never stored. The Advisor also supports cold-start suggestions for clearly low-risk external tools from the current Tool Catalog. The Global Tool picker provides fuzzy search over the current catalog.
+Friction History is stored separately in `~/.pi/agent/auto-approval-friction.json`. Inputs are summarized before persistence (256-character strings, 10 array items, six levels, 4 KiB per record); Tool Results and conversation transcripts are never stored. The Advisor also supports cold-start suggestions for clearly low-risk external tools from the current Tool Catalog. The Reviewer Model and Global Tool pickers provide fuzzy search over their current catalogs.
 
 See [`docs/security.md`](docs/security.md) for the trust boundary and known limitations, [`CONTEXT.md`](CONTEXT.md) for project language, and [`docs/adr`](docs/adr) for architectural decisions.
 

@@ -56,6 +56,39 @@ test("settings UI configures explicit reviewer model and thinking level", async 
   });
 });
 
+test("TUI Reviewer model picker filters models by typing", async () => {
+  await withSettings(async ({ project, store }) => {
+    const menus = ["Reviewer model: not configured", "Done"];
+    const ctx = {
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        select: async () => menus.shift(),
+        notify: () => {},
+        custom: async (factory) => await new Promise((resolve) => {
+          const theme = { fg: (_color, text) => text, bold: (text) => text };
+          const component = factory({ requestRender: () => {} }, theme, {}, resolve);
+          component.handleInput("target");
+          component.handleInput("\r");
+        }),
+      },
+    };
+    await openAutoApprovalSettings(ctx, {
+      store,
+      projectKey: project.key,
+      reviewer: {
+        availableModels: async () => [
+          { provider: "openai", modelId: "other", label: "Other model" },
+          { provider: "openai", modelId: "target", label: "Target reviewer" },
+        ],
+      },
+    });
+    const result = await store.read();
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.config.reviewer?.modelId, "target");
+  });
+});
+
 test("settings UI adds project Policy and Approval Rules", async () => {
   await withSettings(async ({ project, store }) => {
     const menus = [

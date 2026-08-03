@@ -9,7 +9,7 @@ import type { ApprovalRule, AutoApprovalConfig, PolicyRule, ProjectConfig } from
 import { defaultAutoApprovalConfig } from "../domain.ts";
 import { parseAutoApprovalConfig, parsePolicyRule } from "../config/schema.ts";
 import type { AutoApprovalConfigStore } from "../config/store.ts";
-import type { AutomatedReviewer } from "../review/reviewer.ts";
+import type { AutomatedReviewer, ReviewerModelOption } from "../review/reviewer.ts";
 import type { RuleAdvisor } from "../advisor/advisor.ts";
 import type { AdvisorSkillSummary, AdvisorToolMetadata } from "../advisor/prompt.ts";
 import type { FrictionHistoryStore } from "../friction/store.ts";
@@ -54,6 +54,54 @@ async function mutate(
   }
 }
 
+async function chooseReviewerModel(
+  ctx: ExtensionContext,
+  models: ReviewerModelOption[],
+): Promise<ReviewerModelOption | undefined> {
+  if (ctx.mode !== "tui") {
+    const selected = await ctx.ui.select("Reviewer model", models.map((model) => model.label));
+    return models.find((model) => model.label === selected);
+  }
+
+  const selected = await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+    const container = new Container();
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    container.addChild(new Text(theme.fg("accent", theme.bold("Search Reviewer Models")), 1, 0));
+    const items: SettingItem[] = models.map((model, index) => ({
+      id: String(index),
+      label: model.label,
+      currentValue: "select",
+      values: ["select"],
+    }));
+    const list = new SettingsList(
+      items,
+      Math.min(items.length, 12),
+      {
+        label: (text, active) => active ? theme.fg("accent", text) : text,
+        value: (text, active) => active ? theme.fg("accent", text) : theme.fg("muted", text),
+        description: (text) => theme.fg("dim", text),
+        cursor: theme.fg("accent", "→ "),
+        hint: (text) => theme.fg("dim", text),
+      },
+      (id) => done(id),
+      () => done(undefined),
+      { enableSearch: true },
+    );
+    container.addChild(list);
+    container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => {
+        list.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
+  const index = Number(selected);
+  return Number.isInteger(index) ? models[index] : undefined;
+}
+
 async function configureModel(ctx: ExtensionContext, dependencies: SettingsDependencies, config: AutoApprovalConfig): Promise<void> {
   if (!dependencies.reviewer) {
     ctx.ui.notify(`Reviewer runtime unavailable: ${dependencies.reviewerUnavailableReason ?? "unknown error"}`, "warning");
@@ -64,9 +112,7 @@ async function configureModel(ctx: ExtensionContext, dependencies: SettingsDepen
     ctx.ui.notify("No authenticated Reviewer models are available", "warning");
     return;
   }
-  const labels = models.map((model) => model.label);
-  const selected = await ctx.ui.select("Reviewer model", labels);
-  const model = models.find((candidate) => candidate.label === selected);
+  const model = await chooseReviewerModel(ctx, models);
   if (!model) return;
   await mutate(ctx, dependencies.store, (next) => {
     next.reviewer = {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { editApprovalRule, matcherDetails, matcherSummary } from "../src/ui/rule-editor.ts";
+import { RuleActionComponent } from "../src/ui/rule-action-component.ts";
 
 function context(selections, edits = []) {
   const notices = [];
@@ -65,4 +66,23 @@ test("rule editor requires an explicit scope switch for Global Tool-wide authori
     scope: "global",
     matcher: { tool: "context7_query-docs", source, input: { kind: "any" } },
   });
+});
+
+test("rule editor changes Tool-wide scope with left and right arrows", () => {
+  const theme = { fg: (_color, text) => text, bold: (text) => text };
+  const state = { renders: 0, result: undefined };
+  const component = new RuleActionComponent(
+    { requestRender: () => { state.renders += 1; } },
+    theme,
+    (result) => { state.result = result; },
+    { detail: "Tool: custom", allowScope: true, scope: "project" },
+  );
+  component.handleInput("\x1b[B");
+  component.handleInput("\x1b[B");
+  component.handleInput("\x1b[C");
+  assert.match(component.render(80).join("\n"), /Scope\s+Global/);
+  component.handleInput("\x1b[B");
+  component.handleInput("\x1b[B");
+  component.handleInput("\r");
+  assert.deepEqual(state.result, { action: "Save rule", scope: "global" });
 });

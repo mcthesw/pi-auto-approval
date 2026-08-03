@@ -3,6 +3,7 @@ import type { FieldMatcher, JsonValue, ToolMatcher, ToolSourceIdentity } from ".
 import { parseToolMatcher } from "../config/schema.ts";
 import { isJsonValue, isToolWideMatcher, validateToolMatcher } from "../matchers.ts";
 import { tokenizeSingleCommand } from "../policy/bash.ts";
+import { RuleActionComponent, type RuleAction } from "./rule-action-component.ts";
 
 const STANDARD_TOOLS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
 const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
@@ -116,6 +117,29 @@ async function chooseField(ctx: ExtensionContext, matcher: ToolMatcher, exactInp
   return (await ctx.ui.input("Field name"))?.trim() || undefined;
 }
 
+async function selectRuleAction(
+  ctx: ExtensionContext,
+  detail: string,
+  allowScope: boolean,
+  scope: RuleScope,
+): Promise<{ action: RuleAction; scope: RuleScope } | undefined> {
+  if (ctx.mode !== "tui") {
+    const actions = ["Change match type", "Edit constraints"];
+    if (allowScope) actions.push(`Scope: ${scope === "global" ? "Global" : "Current project"}`);
+    actions.push("Advanced JSON", "Save rule", "Cancel");
+    const selected = await ctx.ui.select(detail, actions);
+    if (!selected) return undefined;
+    if (selected.startsWith("Scope:")) {
+      return { action: "Scope", scope: scope === "project" ? "global" : "project" };
+    }
+    return { action: selected as RuleAction, scope };
+  }
+
+  return await ctx.ui.custom<{ action: RuleAction; scope: RuleScope }>((tui, theme, _keybindings, done) =>
+    new RuleActionComponent(tui, theme, done, { detail, allowScope, scope }),
+  );
+}
+
 async function editConstraints(ctx: ExtensionContext, matcher: ToolMatcher, exactInput?: unknown): Promise<ToolMatcher> {
   if (isToolWideMatcher(matcher) || matcher.input.kind !== "fields") return matcher;
   for (;;) {
@@ -155,11 +179,10 @@ export async function editApprovalRule(
   let matcher = structuredClone(options.initial);
   let scope: RuleScope = options.initialScope ?? "project";
   for (;;) {
-    const actions = ["Change match type", "Edit constraints"];
-    if (isToolWideMatcher(matcher)) actions.push(`Scope: ${scope === "global" ? "Global" : "Current project"}`);
-    actions.push("Advanced JSON", "Save rule", "Cancel");
-    const action = await ctx.ui.select(matcherDetails(matcher, scope), actions);
-    if (!action || action === "Cancel") return undefined;
+    const selected = await selectRuleAction(ctx, matcherDetails(matcher, scope), isToolWideMatcher(matcher), scope);
+    if (!selected || selected.action === "Cancel") return undefined;
+    const action = selected.action;
+    scope = selected.scope;
 
     if (action === "Change match type") {
       const types = ["Exact call"];
@@ -196,8 +219,6 @@ export async function editApprovalRule(
         const edited = await editJsonValue(ctx, "Exact Tool input", matcher.input.value);
         if (edited !== undefined) matcher.input.value = edited;
       } else matcher = await editConstraints(ctx, matcher, options.exactInput);
-    } else if (action.startsWith("Scope:")) {
-      scope = scope === "project" ? "global" : "project";
     } else if (action === "Advanced JSON") {
       let source = JSON.stringify(matcher, null, 2);
       for (;;) {
