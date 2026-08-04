@@ -68,6 +68,15 @@ test("Friction History keeps only the latest seven days and fifty project record
   });
 });
 
+test("Friction History serializes concurrent appends", async () => {
+  await withStore(async ({ project, now, store }) => {
+    await Promise.all(Array.from({ length: 12 }, (_, index) => store.append(project, friction(index, now))));
+    const result = await store.readProject(project);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.records.length, 12);
+  });
+});
+
 test("invalid Friction History is reported without replacement", async () => {
   await withStore(async ({ project, store }) => {
     await writeFile(store.filePath, "{broken", "utf8");

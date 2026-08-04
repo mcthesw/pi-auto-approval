@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { AutoApprovalConfigStore } from "../src/config/store.ts";
-import { parseAutoApprovalConfig } from "../src/config/schema.ts";
+import { ConfigValidationError, parseAutoApprovalConfig } from "../src/config/schema.ts";
 import { defaultAutoApprovalConfig } from "../src/domain.ts";
 import { exactMatcherFor, matchesToolCall, validateToolMatcher } from "../src/matchers.ts";
 import { resolveProjectIdentity, resolveProjectPath } from "../src/project.ts";
@@ -49,7 +49,7 @@ test("config store reports invalid files instead of silently replacing them", as
     const result = await store.read();
     assert.equal(result.ok, false);
     if (!result.ok) assert.match(result.error, /Invalid JSON/);
-    await assert.rejects(store.update(() => {}), /Invalid JSON/);
+    await assert.rejects(store.update(() => {}), ConfigValidationError);
   });
 });
 

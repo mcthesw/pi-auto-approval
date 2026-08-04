@@ -1,9 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
-import lockfile from "proper-lockfile";
 import type { FrictionHistory, FrictionRecord, ReviewDecision, UserConfirmationChoice } from "../domain.ts";
 import { isJsonValue } from "../matchers.ts";
+import { LockedAtomicJsonStore } from "../storage/locked-atomic-json-store.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PROJECT_RECORDS = 50;
@@ -82,39 +80,6 @@ function parseHistory(value: unknown): FrictionHistory {
   return { version: 1, projects };
 }
 
-async function readHistory(filePath: string): Promise<FrictionHistory> {
-  try {
-    return parseHistory(JSON.parse(await readFile(filePath, "utf8")));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, projects: {} };
-    if (error instanceof SyntaxError) throw new Error(`Invalid JSON: ${error.message}`);
-    throw error;
-  }
-}
-
-async function writeHistory(filePath: string, history: FrictionHistory): Promise<void> {
-  const validated = parseHistory(history);
-  const directory = path.dirname(filePath);
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  await mkdir(directory, { recursive: true });
-  try {
-    const handle = await open(temporary, "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, filePath);
-  } finally {
-    try {
-      await unlink(temporary);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-}
-
 export type FrictionReadResult =
   | { ok: true; records: FrictionRecord[] }
   | { ok: false; error: string };
@@ -123,16 +88,21 @@ export class FrictionHistoryStore {
   readonly filePath: string;
   readonly lockPath: string;
   private readonly now: () => Date;
+  private readonly json: LockedAtomicJsonStore<FrictionHistory>;
 
   constructor(filePath: string, now: () => Date = () => new Date()) {
     this.filePath = filePath;
-    this.lockPath = `${filePath}.lock`;
     this.now = now;
+    this.json = new LockedAtomicJsonStore(filePath, {
+      empty: () => ({ version: 1, projects: {} }),
+      parse: parseHistory,
+    });
+    this.lockPath = this.json.lockPath;
   }
 
   async readProject(projectKey: string): Promise<FrictionReadResult> {
     try {
-      const history = await readHistory(this.filePath);
+      const history = await this.json.read();
       return { ok: true, records: this.retain(history.projects[projectKey] ?? []) };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -140,26 +110,14 @@ export class FrictionHistoryStore {
   }
 
   async append(projectKey: string, record: FrictionRecord): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    const release = await lockfile.lock(this.filePath, {
-      lockfilePath: this.lockPath,
-      realpath: false,
-      stale: 30_000,
-      update: 5_000,
-      retries: { retries: 100, factor: 1, minTimeout: 50, maxTimeout: 50 },
-    });
-    try {
-      const history = await readHistory(this.filePath);
+    await this.json.update((history) => {
       for (const [key, records] of Object.entries(history.projects)) {
         const retained = this.retain(records);
         if (retained.length) history.projects[key] = retained;
         else delete history.projects[key];
       }
       history.projects[projectKey] = this.retain([...(history.projects[projectKey] ?? []), parseRecord(record, "record")]);
-      await writeHistory(this.filePath, history);
-    } finally {
-      await release();
-    }
+    });
   }
 
   private retain(records: FrictionRecord[]): FrictionRecord[] {
