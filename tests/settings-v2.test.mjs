@@ -16,35 +16,54 @@ async function withSettings(fn) {
   }
 }
 
+function ui(select, overrides = {}) {
+  return {
+    select,
+    notify() {},
+    confirm: async () => true,
+    input: async () => undefined,
+    editor: async () => undefined,
+    ...overrides,
+  };
+}
+
+async function openRulesOnce(store, directory, chooseRule, chooseAction, overrides = {}) {
+  let settingsOpened = false;
+  let ruleChosen = false;
+  const select = async (title, options) => {
+    if (title === "Pi Auto Approval") {
+      if (settingsOpened) return undefined;
+      settingsOpened = true;
+      return "Rules";
+    }
+    if (title === "Rules") {
+      if (ruleChosen) return "Back";
+      ruleChosen = true;
+      return chooseRule(options);
+    }
+    return await chooseAction(title, options);
+  };
+  await openAutoApprovalSettings({ hasUI: true, mode: "rpc", ui: ui(select, overrides) }, { store, projectKey: directory, tools: [] });
+}
+
 test("Rules UI updates the selected Rule by ID after another process reorders it", async () => {
   await withSettings(async ({ directory, store }) => {
     const first = { id: "first", action: "allow", matcher: { tool: "read", input: { kind: "any" } } };
     const second = { id: "second", action: "allow", matcher: { tool: "grep", input: { kind: "any" } } };
     await store.replace({ version: 2, globalRules: [], projects: { [directory]: { rules: [first, second] } } });
-    let reordered = false;
-    let rulesOpened = false;
-    const select = async (title, options) => {
-      if (title === "Pi Auto Approval") return rulesOpened ? "Done" : "Rules";
-      if (title === "Rules") {
-        if (rulesOpened) return "Back";
-        rulesOpened = true;
-        return options.find((item) => item.includes("first"));
-      }
-      if (title.includes("Allow · Project")) {
-        if (!reordered) {
-          reordered = true;
+    let editorStep = 0;
+    await openRulesOnce(store, directory, (options) => options.find((item) => item.includes("Read")), async (title) => {
+      if (title.startsWith("Allow · Project · Read")) return "Edit";
+      if (title.startsWith("Rule Editor")) {
+        if (editorStep++ === 0) {
           await store.update((config) => { config.projects[directory].rules.reverse(); });
+          return "Action: Allow";
         }
-        return "Edit action";
+        return "Save";
       }
-      if (title === "Rule action") return "Deny";
-      return "Back";
-    };
-    await openAutoApprovalSettings({
-      hasUI: true,
-      mode: "rpc",
-      ui: { select, notify() {}, confirm: async () => true, input: async () => undefined, editor: async () => undefined },
-    }, { store, projectKey: directory, tools: [] });
+      if (title.startsWith("Rule action")) return "Deny";
+      return undefined;
+    });
     const loaded = await store.read();
     assert.equal(loaded.ok, true);
     if (loaded.ok) {
@@ -59,37 +78,18 @@ test("matcher edits retain the latest action from another Pi process", async () 
   await withSettings(async ({ directory, store }) => {
     const first = { id: "first", action: "allow", matcher: { tool: "read", input: { kind: "any" } } };
     await store.replace({ version: 2, globalRules: [], projects: { [directory]: { rules: [first] } } });
-    let rulesOpened = false;
-    let advanced = false;
-    const select = async (title, options) => {
-      if (title === "Pi Auto Approval") return rulesOpened ? "Done" : "Rules";
-      if (title === "Rules") {
-        if (rulesOpened) return "Back";
-        rulesOpened = true;
-        return options.find((item) => item.includes("first"));
-      }
-      if (title.includes("Allow · Project")) return "Edit matcher";
-      if (title.startsWith("Tool: Read")) {
-        if (!advanced) {
-          advanced = true;
+    let editorStep = 0;
+    await openRulesOnce(store, directory, (options) => options.find((item) => item.includes("Read")), async (title) => {
+      if (title.startsWith("Allow · Project · Read")) return "Edit";
+      if (title.startsWith("Rule Editor")) {
+        if (editorStep++ === 0) {
           await store.update((config) => { config.projects[directory].rules[0].action = "deny"; });
           return "Advanced JSON";
         }
-        return "Save rule";
+        return "Save";
       }
-      return "Back";
-    };
-    await openAutoApprovalSettings({
-      hasUI: true,
-      mode: "rpc",
-      ui: {
-        select,
-        notify() {},
-        confirm: async () => true,
-        input: async () => undefined,
-        editor: async () => JSON.stringify({ tool: "read", input: { kind: "exact", value: { path: "fresh" } } }),
-      },
-    }, { store, projectKey: directory, tools: [] });
+      return undefined;
+    }, { editor: async () => JSON.stringify({ tool: "read", input: { kind: "exact", value: { path: "fresh" } } }) });
     const loaded = await store.read();
     assert.equal(loaded.ok, true);
     if (loaded.ok) {
@@ -101,42 +101,23 @@ test("matcher edits retain the latest action from another Pi process", async () 
   });
 });
 
-test("matcher edits merge duplicates and preserve the more restrictive action", async () => {
+test("duplicate matcher edits require confirmation and keep the restrictive action", async () => {
   await withSettings(async ({ directory, store }) => {
     const first = { id: "first", action: "allow", matcher: { tool: "read", input: { kind: "any" } } };
     const second = { id: "second", action: "deny", matcher: { tool: "read", input: { kind: "exact", value: { path: "secret" } } } };
     await store.replace({ version: 2, globalRules: [], projects: { [directory]: { rules: [first, second] } } });
-    let rulesOpened = false;
-    let editorSaved = false;
+    let editorStep = 0;
+    const confirmations = [];
     const notices = [];
-    const select = async (title, options) => {
-      if (title === "Pi Auto Approval") return rulesOpened ? "Done" : "Rules";
-      if (title === "Rules") {
-        if (rulesOpened) return "Back";
-        rulesOpened = true;
-        return options.find((item) => item.includes("first"));
-      }
-      if (title.includes("Allow · Project")) return "Edit matcher";
-      if (title.startsWith("Tool: Read")) {
-        if (!editorSaved) {
-          editorSaved = true;
-          return "Advanced JSON";
-        }
-        return "Save rule";
-      }
-      return "Back";
-    };
-    await openAutoApprovalSettings({
-      hasUI: true,
-      mode: "rpc",
-      ui: {
-        select,
-        notify(message) { notices.push(message); },
-        confirm: async () => true,
-        input: async () => undefined,
-        editor: async () => JSON.stringify(second.matcher),
-      },
-    }, { store, projectKey: directory, tools: [] });
+    await openRulesOnce(store, directory, (options) => options.find((item) => item.includes("Read")), async (title) => {
+      if (title.startsWith("Allow · Project · Read")) return "Edit";
+      if (title.startsWith("Rule Editor")) return editorStep++ === 0 ? "Advanced JSON" : "Save";
+      return undefined;
+    }, {
+      notify(message) { notices.push(message); },
+      confirm: async (title) => { confirmations.push(title); return true; },
+      editor: async () => JSON.stringify(second.matcher),
+    });
     const loaded = await store.read();
     assert.equal(loaded.ok, true);
     if (loaded.ok) {
@@ -144,8 +125,23 @@ test("matcher edits merge duplicates and preserve the more restrictive action", 
       assert.equal(rules.length, 1);
       assert.equal(rules[0].id, "second");
       assert.equal(rules[0].action, "deny");
-      assert.deepEqual(rules[0].matcher, second.matcher);
     }
-    assert.ok(notices.some((message) => message.includes("Merged with the matching Rule")));
+    assert.deepEqual(confirmations, ["Merge matching Rules?"]);
+    assert.ok(notices.some((message) => message.includes("Merged matching Rules")));
+  });
+});
+
+test("fallback Rules list distinguishes source-bound Rules without exposing IDs", async () => {
+  await withSettings(async ({ directory, store }) => {
+    const alpha = { id: "internal-alpha", action: "allow", matcher: { tool: "custom", source: { source: "mcp", path: "alpha" }, input: { kind: "any" } } };
+    const beta = { id: "internal-beta", action: "allow", matcher: { tool: "custom", source: { source: "mcp", path: "beta" }, input: { kind: "any" } } };
+    await store.replace({ version: 2, globalRules: [], projects: { [directory]: { rules: [alpha, beta] } } });
+    await openRulesOnce(store, directory, (options) => {
+      assert.ok(options.every((item) => !item.includes("internal-")));
+      return options.find((item) => item.includes("mcp:beta"));
+    }, async (title) => title.includes("mcp:beta") ? "Delete" : undefined);
+    const loaded = await store.read();
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) assert.deepEqual(loaded.config.projects[directory].rules.map((rule) => rule.id), ["internal-alpha"]);
   });
 });

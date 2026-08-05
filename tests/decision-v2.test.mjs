@@ -17,7 +17,7 @@ async function withDecision(fn) {
   }
 }
 
-function context(directory, select = async () => undefined) {
+function context(directory, select = async () => undefined, uiOverrides = {}) {
   return {
     cwd: directory,
     mode: "rpc",
@@ -29,6 +29,7 @@ function context(directory, select = async () => undefined) {
       confirm: async () => true,
       input: async () => undefined,
       editor: async () => undefined,
+      ...uiOverrides,
     },
   };
 }
@@ -47,7 +48,7 @@ test("Reviewer allow remains final for project-external Tool Calls", async () =>
 
 test("ask without a usable suggestion falls back to a source-bound Project exact Rule", async () => {
   await withDecision(async ({ directory, store }) => {
-    const select = async (_title, options) => options.includes("Always allow with Rule") ? "Always allow with Rule" : "Save rule";
+    const select = async (_title, options) => options.includes("Allow with Rule") ? "Allow with Rule" : "Save selected";
     const call = { id: "1", name: "context7_query-docs", input: { libraryId: "/vercel/next.js", query: "routing" } };
     const result = await decideToolCall(context(directory, select), call, {
       store,
@@ -70,7 +71,7 @@ test("ask without a usable suggestion falls back to a source-bound Project exact
 
 test("composite Bash suggestions persist a Rule for every uncovered segment", async () => {
   await withDecision(async ({ directory, store }) => {
-    const select = async (_title, options) => options.includes("Always allow with Rule") ? "Always allow with Rule" : "Save rule";
+    const select = async (_title, options) => options.includes("Allow with Rule") ? "Allow with Rule" : "Save selected";
     const call = { id: "1", name: "bash", input: { command: "cargo fmt --all && cargo clippy --workspace" } };
     const result = await decideToolCall(context(directory, select), call, {
       store,
@@ -88,5 +89,29 @@ test("composite Bash suggestions persist a Rule for every uncovered segment", as
     const loaded = await store.read();
     assert.equal(loaded.ok, true);
     if (loaded.ok) assert.equal(loaded.config.projects[directory].rules.length, 2);
+  });
+});
+
+test("Allow with Rule previews a matching Rule and keeps its restrictive action", async () => {
+  await withDecision(async ({ directory, store }) => {
+    const call = { id: "1", name: "context7_query-docs", input: { libraryId: "/vercel/next.js", query: "routing" } };
+    const matcher = { tool: call.name, input: { kind: "exact", value: call.input } };
+    await store.update((config) => {
+      config.projects[directory] = { rules: [{ id: "ask-existing", action: "ask", matcher }] };
+    });
+    const confirmations = [];
+    const select = async (_title, options) => options.includes("Allow with Rule") ? "Allow with Rule" : "Save selected";
+    const result = await decideToolCall(context(directory, select, {
+      confirm: async (title) => { confirmations.push(title); return true; },
+    }), call, {
+      store,
+      project: { key: directory, root: directory },
+      messages: [],
+    });
+    assert.equal(result, undefined);
+    assert.deepEqual(confirmations, ["Merge matching Rules?"]);
+    const loaded = await store.read();
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) assert.equal(loaded.config.projects[directory].rules[0].action, "ask");
   });
 });

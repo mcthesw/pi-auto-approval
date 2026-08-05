@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
@@ -11,8 +10,12 @@ import type { RuleAdvisor } from "../advisor/advisor.ts";
 import type { AdvisorSkillSummary, AdvisorToolMetadata } from "../advisor/prompt.ts";
 import type { FrictionHistoryStore } from "../friction/store.ts";
 import { isStandardToolName, matcherKey, type RuleScope } from "../matchers.ts";
+import { findMatchingRule, moreRestrictiveAction, upsertRestrictiveRule } from "../rules.ts";
 import { openRuleAdvisor } from "./advisor.ts";
-import { editRuleMatcher, matcherSummary } from "./rule-editor.ts";
+import { actionLabel, editRule, matcherSummary } from "./rule-editor.ts";
+import { confirmRuleConflicts } from "./rule-conflicts.ts";
+import { RuleListComponent, type RuleListResult } from "./rule-list-component.ts";
+import { singleLine } from "./text.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
@@ -32,10 +35,6 @@ type RuleLocation = { scope: RuleScope; rule: Rule };
 
 function projectRules(config: AutoApprovalConfig, key: string): Rule[] {
   return (config.projects[key] ??= { rules: [] }).rules;
-}
-
-function actionLabel(action: RuleAction): string {
-  return action === "allow" ? "Allow" : action === "ask" ? "Ask" : "Deny";
 }
 
 function errorMessage(error: unknown): string {
@@ -59,27 +58,30 @@ function locateRule(config: AutoApprovalConfig, projectKey: string, id: string):
   return global ? { scope: "global", rule: global } : undefined;
 }
 
-function moreRestrictiveAction(left: RuleAction, right: RuleAction): RuleAction {
-  const rank: Record<RuleAction, number> = { allow: 0, ask: 1, deny: 2 };
-  return rank[left] >= rank[right] ? left : right;
-}
-
-function replaceRule(config: AutoApprovalConfig, projectKey: string, id: string, matcher: ToolMatcher, scope: RuleScope): boolean {
+function replaceRule(
+  config: AutoApprovalConfig,
+  projectKey: string,
+  id: string,
+  edited: { action: RuleAction; matcher: ToolMatcher; scope: RuleScope },
+  actionChanged: boolean,
+  confirmedConflictId?: string,
+): boolean {
   const current = locateRule(config, projectKey, id);
   if (!current) throw new Error("Rule changed or was removed by another Pi process");
   const source = current.scope === "global" ? config.globalRules : projectRules(config, projectKey);
   const sourceIndex = source.findIndex((rule) => rule.id === id);
   if (sourceIndex < 0) throw new Error("Rule changed or was removed by another Pi process");
-  const target = scope === "global" ? config.globalRules : projectRules(config, projectKey);
-  const existing = target.find((rule) => rule.id !== id && matcherKey(rule.matcher) === matcherKey(matcher));
+  const target = edited.scope === "global" ? config.globalRules : projectRules(config, projectKey);
+  const existing = target.find((rule) => rule.id !== id && matcherKey(rule.matcher) === matcherKey(edited.matcher));
+  const desiredAction = actionChanged ? edited.action : current.rule.action;
   if (existing) {
-    existing.action = moreRestrictiveAction(existing.action, current.rule.action);
+    if (existing.id !== confirmedConflictId) throw new Error("A matching Rule appeared in another Pi process; review the edit again");
+    existing.action = moreRestrictiveAction(existing.action, desiredAction);
     source.splice(sourceIndex, 1);
     return true;
   }
-  const action = current.rule.action;
   source.splice(sourceIndex, 1);
-  target.push({ id, action, matcher: structuredClone(matcher) });
+  target.push({ id, action: desiredAction, matcher: structuredClone(edited.matcher) });
   return false;
 }
 
@@ -157,59 +159,109 @@ async function chooseTool(ctx: ExtensionContext, tools: readonly AdvisorToolMeta
 }
 
 async function addRule(ctx: ExtensionContext, dependencies: SettingsDependencies): Promise<void> {
-  const action = await chooseAction(ctx);
-  if (!action) return;
   const tool = await chooseTool(ctx, dependencies.tools ?? []);
   if (!tool) return;
+  const action = await chooseAction(ctx);
+  if (!action) return;
   const toolSource = isStandardToolName(tool.name) ? undefined : tool.source;
-  const edited = await editRuleMatcher(ctx, {
+  const edited = await editRule(ctx, {
+    initialAction: action,
     initial: { tool: tool.name, ...(toolSource ? { source: toolSource } : {}), input: { kind: "any" } },
     toolSource,
   });
   if (!edited) return;
+  const loaded = await dependencies.store.read();
+  if (!loaded.ok) {
+    ctx.ui.notify(loaded.error, "error");
+    return;
+  }
+  const currentTarget = edited.scope === "global" ? loaded.config.globalRules : projectRules(loaded.config, dependencies.projectKey);
+  const conflict = findMatchingRule(currentTarget, edited.matcher);
+  if (!await confirmRuleConflicts(ctx, conflict ? [{ existing: conflict, incoming: edited }] : [])) return;
   await mutate(ctx, dependencies.store, (config) => {
     const target = edited.scope === "global" ? config.globalRules : projectRules(config, dependencies.projectKey);
-    const existing = target.find((rule) => matcherKey(rule.matcher) === matcherKey(edited.matcher));
-    if (existing) {
-      existing.action = action;
-      existing.matcher = edited.matcher;
-    } else target.push({ id: randomUUID(), action, matcher: edited.matcher });
+    upsertRestrictiveRule(target, edited.action, edited.matcher);
+  });
+}
+
+function ruleSummary(location: RuleLocation): string {
+  const source = location.rule.matcher.source;
+  const sourceLabel = source ? ` · ${singleLine(source.source)}:${singleLine(source.path)}` : "";
+  return `${actionLabel(location.rule.action)} · ${location.scope === "global" ? "Global" : "Project"} · ${matcherSummary(location.rule.matcher)}${sourceLabel}`;
+}
+
+async function deleteRule(ctx: ExtensionContext, dependencies: SettingsDependencies, initial: RuleLocation): Promise<void> {
+  if (!await ctx.ui.confirm("Delete Rule?", ruleSummary(initial))) return;
+  await mutate(ctx, dependencies.store, (config) => {
+    const current = locateRule(config, dependencies.projectKey, initial.rule.id);
+    if (!current) throw new Error("Rule changed or was removed by another Pi process");
+    const rules = current.scope === "global" ? config.globalRules : projectRules(config, dependencies.projectKey);
+    const index = rules.findIndex((rule) => rule.id === initial.rule.id);
+    if (index < 0) throw new Error("Rule changed or was removed by another Pi process");
+    rules.splice(index, 1);
   });
 }
 
 async function manageRule(ctx: ExtensionContext, dependencies: SettingsDependencies, initial: RuleLocation): Promise<void> {
-  const selected = await ctx.ui.select(
-    `${actionLabel(initial.rule.action)} · ${initial.scope === "global" ? "Global" : "Project"}\n${matcherSummary(initial.rule.matcher)}`,
-    ["Edit action", "Edit matcher", "Delete", "Back"],
-  );
-  if (!selected || selected === "Back") return;
-  if (selected === "Delete") {
-    if (!await ctx.ui.confirm("Delete Rule?", initial.rule.id)) return;
-    await mutate(ctx, dependencies.store, (config) => {
-      const current = locateRule(config, dependencies.projectKey, initial.rule.id);
-      if (!current) throw new Error("Rule changed or was removed by another Pi process");
-      const rules = current.scope === "global" ? config.globalRules : projectRules(config, dependencies.projectKey);
-      const index = rules.findIndex((rule) => rule.id === initial.rule.id);
-      if (index < 0) throw new Error("Rule changed or was removed by another Pi process");
-      rules.splice(index, 1);
-    });
-  } else if (selected === "Edit action") {
-    const action = await chooseAction(ctx);
-    if (action) await mutate(ctx, dependencies.store, (config) => {
-      const current = locateRule(config, dependencies.projectKey, initial.rule.id);
-      if (!current) throw new Error("Rule changed or was removed by another Pi process");
-      current.rule.action = action;
-    });
-  } else if (selected === "Edit matcher") {
-    const edited = await editRuleMatcher(ctx, { initial: initial.rule.matcher, initialScope: initial.scope, toolSource: initial.rule.matcher.source });
-    if (edited) {
-      let merged = false;
-      const saved = await mutate(ctx, dependencies.store, (config) => {
-        merged = replaceRule(config, dependencies.projectKey, initial.rule.id, edited.matcher, edited.scope);
-      });
-      if (saved && merged) ctx.ui.notify("Merged with the matching Rule; kept the more restrictive action.", "info");
-    }
+  const edited = await editRule(ctx, {
+    initialAction: initial.rule.action,
+    initial: initial.rule.matcher,
+    initialScope: initial.scope,
+    toolSource: initial.rule.matcher.source,
+  });
+  if (!edited) return;
+
+  const latest = await dependencies.store.read();
+  if (!latest.ok) {
+    ctx.ui.notify(latest.error, "error");
+    return;
   }
+  const current = locateRule(latest.config, dependencies.projectKey, initial.rule.id);
+  if (!current) {
+    ctx.ui.notify("Rule changed or was removed by another Pi process", "error");
+    return;
+  }
+  const target = edited.scope === "global" ? latest.config.globalRules : projectRules(latest.config, dependencies.projectKey);
+  const conflict = target.find((rule) => rule.id !== initial.rule.id && matcherKey(rule.matcher) === matcherKey(edited.matcher));
+  const actionChanged = edited.action !== initial.rule.action;
+  const desiredAction = actionChanged ? edited.action : current.rule.action;
+  if (conflict) {
+    const mergedAction = moreRestrictiveAction(conflict.action, desiredAction);
+    const detail = [
+      `Existing: ${actionLabel(conflict.action)} · ${edited.scope === "global" ? "Global" : "Project"} · ${matcherSummary(conflict.matcher)}`,
+      `Merged action: ${actionLabel(mergedAction)}`,
+    ].join("\n");
+    if (!await ctx.ui.confirm("Merge matching Rules?", detail)) return;
+  }
+
+  let merged = false;
+  const saved = await mutate(ctx, dependencies.store, (config) => {
+    merged = replaceRule(config, dependencies.projectKey, initial.rule.id, edited, actionChanged, conflict?.id);
+  });
+  if (saved && merged) ctx.ui.notify("Merged matching Rules and kept the more restrictive action", "info");
+}
+
+async function chooseRuleListAction(
+  ctx: ExtensionContext,
+  locations: readonly RuleLocation[],
+): Promise<RuleListResult | undefined> {
+  if (ctx.mode === "tui") {
+    return await ctx.ui.custom<RuleListResult>((tui, theme, _keybindings, done) => new RuleListComponent(
+      tui,
+      theme,
+      locations.map((location) => ({ summary: ruleSummary(location), scope: location.scope })),
+      done,
+    ));
+  }
+  const labels = ["+ Add Rule", ...locations.map(ruleSummary), "Back"];
+  const selected = await ctx.ui.select("Rules", labels);
+  if (!selected || selected === "Back") return { kind: "cancelled" };
+  if (selected === "+ Add Rule") return { kind: "add" };
+  const index = labels.indexOf(selected) - 1;
+  const action = await ctx.ui.select(ruleSummary(locations[index]!), ["Edit", "Delete", "Back"]);
+  return action === "Edit" ? { kind: "edit", index }
+    : action === "Delete" ? { kind: "delete", index }
+    : undefined;
 }
 
 async function manageRules(ctx: ExtensionContext, dependencies: SettingsDependencies): Promise<void> {
@@ -220,20 +272,15 @@ async function manageRules(ctx: ExtensionContext, dependencies: SettingsDependen
       ...(loaded.config.projects[dependencies.projectKey]?.rules ?? []).map((rule) => ({ scope: "project" as const, rule })),
       ...loaded.config.globalRules.map((rule) => ({ scope: "global" as const, rule })),
     ];
-    const labels = [
-      "Add Rule",
-      ...locations.map((location) => `${actionLabel(location.rule.action)} · ${location.scope === "global" ? "Global" : "Project"} · ${matcherSummary(location.rule.matcher)} · ${location.rule.id}`),
-      "Back",
-    ];
-    const selected = await ctx.ui.select("Rules", labels);
-    if (!selected || selected === "Back") return;
-    if (selected === "Add Rule") {
-      await addRule(ctx, dependencies);
-      continue;
+    const selected = await chooseRuleListAction(ctx, locations);
+    if (!selected || selected.kind === "cancelled") return;
+    if (selected.kind === "add") await addRule(ctx, dependencies);
+    else {
+      const location = locations[selected.index];
+      if (!location) continue;
+      if (selected.kind === "delete") await deleteRule(ctx, dependencies, location);
+      else await manageRule(ctx, dependencies, location);
     }
-    const index = labels.indexOf(selected) - 1;
-    const location = locations[index];
-    if (location) await manageRule(ctx, dependencies, location);
   }
 }
 
@@ -276,8 +323,8 @@ export async function openAutoApprovalSettings(ctx: ExtensionContext, dependenci
       if (!(await repairConfig(ctx, dependencies.store, loaded.error))) return;
       continue;
     }
-    const selected = await ctx.ui.select("Pi Auto Approval", ["Rules", "Suggestions", "Reviewer", "Done"]);
-    if (!selected || selected === "Done") return;
+    const selected = await ctx.ui.select("Pi Auto Approval", ["Rules", "Suggestions", "Reviewer"]);
+    if (!selected) return;
     if (selected === "Rules") await manageRules(ctx, dependencies);
     else if (selected === "Reviewer") await manageReviewer(ctx, dependencies);
     else if (!dependencies.history || !dependencies.projectRoot) ctx.ui.notify("Rule Advisor runtime unavailable", "warning");

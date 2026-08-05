@@ -1,13 +1,14 @@
-import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { FrictionRecord, Rule, RuleAction, ToolMatcher } from "../domain.ts";
+import type { FrictionRecord, RuleAction, ToolMatcher } from "../domain.ts";
 import type { AutoApprovalConfigStore } from "../config/store.ts";
 import type { FrictionHistoryStore } from "../friction/store.ts";
 import type { RuleAdvisor, AdvisorSuggestion } from "../advisor/advisor.ts";
 import type { AdvisorSkillSummary, AdvisorToolMetadata } from "../advisor/prompt.ts";
-import { matcherKey, validateToolMatcher, type RuleScope } from "../matchers.ts";
-import { AdvisorCandidateListComponent, type AdvisorListResult } from "./advisor-component.ts";
-import { editRuleMatcher, matcherDetails, matcherSummary } from "./rule-editor.ts";
+import { validateToolMatcher, type RuleScope } from "../matchers.ts";
+import { findMatchingRule, upsertRestrictiveRule } from "../rules.ts";
+import { confirmRuleConflicts, type RuleConflict } from "./rule-conflicts.ts";
+import { RuleReviewComponent, type RuleReviewResult } from "./rule-review-component.ts";
+import { actionLabel, editRule, matcherSummary } from "./rule-editor.ts";
 import { runWithAsyncLoader } from "./async-loader.ts";
 
 export type AdvisorUiDependencies = {
@@ -31,10 +32,6 @@ type CandidateState = {
   replacements: Array<{ id: string; summary: string }>;
 };
 
-function actionLabel(action: RuleAction): string {
-  return action === "allow" ? "Allow" : action === "ask" ? "Ask" : "Deny";
-}
-
 function compact(value: unknown, max = 320): string {
   const text = JSON.stringify(value);
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -50,62 +47,50 @@ function hasCounterevidence(suggestion: AdvisorSuggestion, records: Map<string, 
   });
 }
 
-async function editAction(ctx: ExtensionContext, action: RuleAction): Promise<RuleAction | undefined> {
-  const selected = await ctx.ui.select("Rule action", ["Allow", "Ask", "Deny"]);
-  if (!selected) return undefined;
-  return selected === "Allow" ? "allow" : selected === "Ask" ? "ask" : "deny";
+function candidateContext(candidate: CandidateState, records: Map<string, FrictionRecord>): string[] {
+  const stats = candidate.suggestion.stats;
+  const evidence = candidate.suggestion.supportingRecordIds.slice(0, 3).flatMap((id) => {
+    const record = records.get(id);
+    return record ? [`Evidence: ${record.tool.name} ${compact(record.input)}`] : [];
+  });
+  return [
+    `Rationale: ${candidate.suggestion.rationale}`,
+    stats.calls
+      ? `Observed: ${stats.calls} calls · ${stats.userConfirmations} user confirmations · ${stats.automatedReviews} AI reviews`
+      : "Observed: no calls (Tool Catalog suggestion)",
+    ...(candidate.replacements.length ? [`Replaces: ${candidate.replacements.map((rule) => rule.summary).join("; ")}`] : []),
+    ...(hasCounterevidence(candidate.suggestion, records) ? ["Warning: evidence includes ask, deny, or cancelled outcomes"] : []),
+    ...(candidate.edited ? ["Statistics refer to the original suggestion"] : []),
+    ...evidence,
+  ];
 }
 
-async function showDetail(
+async function editCandidate(
   ctx: ExtensionContext,
   candidate: CandidateState,
   records: Map<string, FrictionRecord>,
   tools: readonly AdvisorToolMetadata[],
 ): Promise<void> {
-  const evidence = candidate.suggestion.supportingRecordIds.slice(0, 3).flatMap((id) => {
-    const record = records.get(id);
-    return record ? [`${record.tool.name}: ${compact(record.input)}`] : [];
+  const tool = tools.find((item) => item.name === candidate.matcher.tool);
+  const firstRecord = candidate.suggestion.supportingRecordIds.map((id) => records.get(id)).find(Boolean);
+  const edited = await editRule(ctx, {
+    initialAction: candidate.action,
+    initial: candidate.matcher,
+    initialScope: candidate.scope,
+    toolSource: tool?.source,
+    exactInput: firstRecord?.input,
+    contextLines: candidateContext(candidate, records),
   });
-  const stats = candidate.suggestion.stats;
-  const detail = [
-    `Action: ${actionLabel(candidate.action)}`,
-    matcherDetails(candidate.matcher, candidate.scope),
-    "",
-    `Advisor rationale: ${candidate.suggestion.rationale}`,
-    stats.calls
-      ? `Advisor evidence: ${stats.calls} calls · ${stats.userConfirmations} user confirmations · ${stats.automatedReviews} AI reviews`
-      : "Advisor evidence: No observed calls (Tool Catalog suggestion)",
-    ...(candidate.replacements.length
-      ? ["Replaces:", ...candidate.replacements.map((rule) => `  ${rule.id}: ${rule.summary}`)]
-      : []),
-    ...(hasCounterevidence(candidate.suggestion, records) ? ["Warning: cited evidence includes ask, deny, or cancelled outcomes."] : []),
-    ...(candidate.edited ? ["Statistics and replacements refer to the original suggestion before editing."] : []),
-    ...(evidence.length ? ["", "Recent evidence:", ...evidence.map((item) => `  ${item}`)] : []),
-  ].join("\n");
-  const selection = await ctx.ui.select(detail, [candidate.selected ? "Unselect" : "Select", "Edit action", "Edit matcher", "Back"]);
-  if (selection === "Select") candidate.selected = true;
-  else if (selection === "Unselect") candidate.selected = false;
-  else if (selection === "Edit action") {
-    const action = await editAction(ctx, candidate.action);
-    if (action) {
-      candidate.action = action;
-      candidate.edited = true;
-    }
-  } else if (selection === "Edit matcher") {
-    const tool = tools.find((item) => item.name === candidate.matcher.tool);
-    const firstRecord = candidate.suggestion.supportingRecordIds.map((id) => records.get(id)).find(Boolean);
-    const edited = await editRuleMatcher(ctx, {
-      initial: candidate.matcher,
-      initialScope: candidate.scope,
-      toolSource: tool?.source,
-      exactInput: firstRecord?.input,
-    });
-    if (edited) {
-      candidate.matcher = edited.matcher;
-      candidate.scope = edited.scope;
-      candidate.edited = true;
-    }
-  }
+  if (!edited) return;
+  candidate.action = edited.action;
+  candidate.matcher = edited.matcher;
+  candidate.scope = edited.scope;
+  candidate.selected = true;
+  candidate.edited = true;
+}
+
+function applySelection(candidates: CandidateState[], selected: readonly boolean[]): void {
+  selected.forEach((value, index) => { if (candidates[index]) candidates[index].selected = value; });
 }
 
 async function reviewInTui(
@@ -115,24 +100,29 @@ async function reviewInTui(
   tools: readonly AdvisorToolMetadata[],
 ): Promise<boolean> {
   for (;;) {
-    const result = await ctx.ui.custom<AdvisorListResult>((tui, theme, _keybindings, done) => new AdvisorCandidateListComponent(
+    const result = await ctx.ui.custom<RuleReviewResult>((tui, theme, _keybindings, done) => new RuleReviewComponent(
       tui,
       theme,
       candidates.map((candidate) => ({
         summary: `${actionLabel(candidate.action)} · ${matcherSummary(candidate.matcher)}`,
-        stats: candidate.suggestion.stats,
         selected: candidate.selected,
         scope: candidate.scope,
-        replaces: candidate.replacements.length,
+        suffix: candidate.suggestion.stats.calls ? `${candidate.suggestion.stats.calls} calls` : undefined,
         warning: hasCounterevidence(candidate.suggestion, records),
       })),
       done,
+      { title: "Rule Suggestions", subtitle: "Nothing is selected by default" },
     ));
-    if (!result || result.kind === "cancelled") return false;
-    result.selected.forEach((selected, index) => { if (candidates[index]) candidates[index].selected = selected; });
-    if (result.kind === "continue") return true;
+    if (!result) return false;
+    applySelection(candidates, result.selected);
+    if (result.kind === "cancelled") return false;
+    if (result.kind === "save") {
+      if (candidates.some((candidate) => candidate.selected)) return true;
+      ctx.ui.notify("Select at least one Rule with Space", "info");
+      continue;
+    }
     const candidate = candidates[result.index];
-    if (candidate) await showDetail(ctx, candidate, records, tools);
+    if (candidate) await editCandidate(ctx, candidate, records, tools);
   }
 }
 
@@ -144,26 +134,24 @@ async function reviewWithMenus(
 ): Promise<boolean> {
   for (;;) {
     const labels = [
-      ...candidates.map((candidate, index) =>
-        `${candidate.selected ? "[x]" : "[ ]"} ${index + 1}. ${actionLabel(candidate.action)} · ${matcherSummary(candidate.matcher)} · ${candidate.scope}`),
-      "Review selected",
-      "Cancel",
+      ...candidates.map((candidate) => `${candidate.selected ? "[x]" : "[ ]"} ${actionLabel(candidate.action)} · ${candidate.scope} · ${matcherSummary(candidate.matcher)}`),
+      "Save selected",
+      "Back",
     ];
-    const selected = await ctx.ui.select("Rule Suggestions (none selected by default)", labels);
-    if (!selected || selected === "Cancel") return false;
-    if (selected === "Review selected") return true;
+    const selected = await ctx.ui.select("Rule Suggestions (nothing selected by default)", labels);
+    if (!selected || selected === "Back") return false;
+    if (selected === "Save selected") {
+      if (candidates.some((candidate) => candidate.selected)) return true;
+      ctx.ui.notify("Select at least one Rule", "info");
+      continue;
+    }
     const index = labels.indexOf(selected);
-    if (candidates[index]) await showDetail(ctx, candidates[index], records, tools);
-  }
-}
-
-function upsertRule(rules: Rule[], action: RuleAction, matcher: ToolMatcher): void {
-  const existing = rules.find((rule) => matcherKey(rule.matcher) === matcherKey(matcher));
-  if (existing) {
-    existing.action = action;
-    existing.matcher = structuredClone(matcher);
-  } else {
-    rules.push({ id: randomUUID(), action, matcher: structuredClone(matcher) });
+    const candidate = candidates[index];
+    if (!candidate) continue;
+    const action = await ctx.ui.select(selected, [candidate.selected ? "Unselect" : "Select", "View / edit", "Back"]);
+    if (action === "Select") candidate.selected = true;
+    else if (action === "Unselect") candidate.selected = false;
+    else if (action === "View / edit") await editCandidate(ctx, candidate, records, tools);
   }
 }
 
@@ -173,21 +161,39 @@ async function persistSelected(ctx: ExtensionContext, dependencies: AdvisorUiDep
     ctx.ui.notify("No Rule Suggestions selected", "info");
     return;
   }
-  const summary = selected.map((candidate) =>
-    `• ${actionLabel(candidate.action)} · ${candidate.scope} · ${matcherSummary(candidate.matcher)}`).join("\n");
-  if (!await ctx.ui.confirm("Save Rules?", summary)) return;
+  const latest = await dependencies.store.read();
+  if (!latest.ok) {
+    ctx.ui.notify(latest.error, "error");
+    return;
+  }
+  const accepted: CandidateState[] = [];
+  const conflicts: RuleConflict[] = [];
+  const currentProjectRules = latest.config.projects[dependencies.projectKey]?.rules ?? [];
+  for (const candidate of selected) {
+    if (validateToolMatcher(candidate.matcher, { scope: candidate.scope })) continue;
+    const replacementIds = new Set(candidate.suggestion.replacesRuleIds);
+    const replacements = [...replacementIds].map((id) => currentProjectRules.find((rule) => rule.id === id));
+    if (replacements.some((rule) => !rule || rule.matcher.tool !== candidate.matcher.tool)) continue;
+    const target = candidate.scope === "global"
+      ? latest.config.globalRules
+      : currentProjectRules.filter((rule) => !replacementIds.has(rule.id));
+    const conflict = findMatchingRule(target, candidate.matcher);
+    if (conflict) conflicts.push({ existing: conflict, incoming: candidate });
+    accepted.push(candidate);
+  }
+  if (!await confirmRuleConflicts(ctx, conflicts)) return;
+
   let saved = 0;
   try {
     await dependencies.store.update((config) => {
       const project = (config.projects[dependencies.projectKey] ??= { rules: [] });
-      for (const candidate of selected) {
-        if (validateToolMatcher(candidate.matcher, { scope: candidate.scope })) continue;
+      for (const candidate of accepted) {
         const replacementIds = new Set(candidate.suggestion.replacesRuleIds);
         const replacements = [...replacementIds].map((id) => project.rules.find((rule) => rule.id === id));
         if (replacements.some((rule) => !rule || rule.matcher.tool !== candidate.matcher.tool)) continue;
         if (replacementIds.size) project.rules = project.rules.filter((rule) => !replacementIds.has(rule.id));
         const target = candidate.scope === "global" ? config.globalRules : project.rules;
-        upsertRule(target, candidate.action, candidate.matcher);
+        upsertRestrictiveRule(target, candidate.action, candidate.matcher);
         saved += 1;
       }
     });

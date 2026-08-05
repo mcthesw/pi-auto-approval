@@ -10,7 +10,7 @@ import { exactMatcherFor, matchesToolCall, validateToolMatcher } from "../src/ma
 import { evaluatePolicy } from "../src/policy/engine.ts";
 import { formatConservativeBashCommand, parseConservativeBash } from "../src/policy/bash.ts";
 import { resolveProjectPath } from "../src/project.ts";
-import { matcherDetails, matcherSummary } from "../src/ui/rule-editor.ts";
+import { matcherSummary } from "../src/ui/rule-editor.ts";
 
 async function withTempDirectory(fn) {
   const directory = await mkdtemp(path.join(tmpdir(), "pi-auto-rules-v2-"));
@@ -147,6 +147,6 @@ test("global absolute path glob matches canonical targets and rule summaries sta
     const context = { resolvePath: async (value) => await resolveProjectPath(directory, directory, value), tokenizeBash: () => undefined, scope: "global" };
     assert.equal(await matchesToolCall(matcher, { id: "1", name: "read", input: { path: target } }, context), true);
     assert.equal(matcherSummary(cargoFmt), "Bash(cargo fmt *)");
-    assert.match(matcherDetails({ tool: "context7_query-docs", input: { kind: "any" } }), /context7:query-docs/);
+    assert.equal(matcherSummary({ tool: "context7_query-docs", input: { kind: "any" } }), "context7:query-docs");
   });
 });

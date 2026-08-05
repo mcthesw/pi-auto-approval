@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
   AutoApprovalConfig,
   FrictionRecord,
   ProjectConfig,
   ReviewDecision,
-  Rule,
   ToolCall,
   ToolMatcher,
   ToolSourceIdentity,
@@ -21,8 +19,10 @@ import {
   type RuleScope,
 } from "./matchers.ts";
 import { resolveProjectPath, type ProjectIdentity } from "./project.ts";
+import { findMatchingRule, upsertRestrictiveRule } from "./rules.ts";
 import { formatConservativeBashCommand, parseConservativeBash, tokenizeSingleCommand } from "./policy/bash.ts";
 import { evaluatePolicy } from "./policy/engine.ts";
+import { confirmRuleConflicts, type RuleConflict } from "./ui/rule-conflicts.ts";
 import type { AutoApprovalConfigStore } from "./config/store.ts";
 import { confirmToolCall } from "./approval/confirmation.ts";
 import type { AutomatedReviewer } from "./review/reviewer.ts";
@@ -135,28 +135,35 @@ async function chooseProposals(
   return [...unique.values()];
 }
 
-function upsertAllowRule(rules: Rule[], matcher: ToolMatcher): void {
-  const existing = rules.find((rule) => matcherKey(rule.matcher) === matcherKey(matcher));
-  if (existing) {
-    existing.action = "allow";
-    existing.matcher = structuredClone(matcher);
-    return;
-  }
-  rules.push({ id: randomUUID(), action: "allow", matcher: structuredClone(matcher) });
-}
-
 async function persistRules(
   ctx: ExtensionContext,
   dependencies: DecisionDependencies,
   rules: readonly ReviewRuleSuggestion[],
 ): Promise<void> {
+  const latest = await dependencies.store.read();
+  if (!latest.ok) {
+    ctx.ui.notify(`Current Tool Call allowed, but its Rule could not be saved: ${latest.error}`, "error");
+    return;
+  }
+  const conflicts: RuleConflict[] = [];
+  for (const candidate of rules) {
+    const target = candidate.scope === "global"
+      ? latest.config.globalRules
+      : latest.config.projects[dependencies.project.key]?.rules ?? [];
+    const existing = findMatchingRule(target, candidate.matcher);
+    if (existing) conflicts.push({ existing, incoming: { action: "allow", ...candidate } });
+  }
+  if (!await confirmRuleConflicts(ctx, conflicts)) {
+    ctx.ui.notify("Current Tool Call allowed once; no Rules were saved", "info");
+    return;
+  }
   try {
     await dependencies.store.update((config) => {
       for (const candidate of rules) {
         const target = candidate.scope === "global"
           ? config.globalRules
           : (config.projects[dependencies.project.key] ??= { rules: [] }).rules;
-        upsertAllowRule(target, candidate.matcher);
+        upsertRestrictiveRule(target, "allow", candidate.matcher);
       }
     });
   } catch (error) {
