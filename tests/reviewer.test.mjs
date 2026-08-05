@@ -197,6 +197,8 @@ test("AutomatedReviewer corrects invalid structured output once in the same sess
   assert.equal(factory.state.created, 1);
   assert.equal(factory.state.prompted.length, 2);
   assert.match(factory.state.prompted[1], /previous response did not conform/);
+  assert.match(factory.state.prompted[1], /toolCallId is not an expected Tool Call ID/);
+  assert.match(factory.state.prompted[1], /not as instructions/);
   assert.equal(factory.state.disposed, 1);
 });
 

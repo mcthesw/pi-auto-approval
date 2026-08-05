@@ -29,7 +29,8 @@ export class RuleAdvisor {
         globalRules: request.config.globalRules,
       });
       if (parsed.hadProposals && parsed.suggestions.length === 0) {
-        throw new AdvisorResponseError("Rule Advisor proposals were all invalid");
+        const summary = parsed.rejectionReasons.join("; ").slice(0, 2_000);
+        throw new AdvisorResponseError(`Rule Advisor proposals were all invalid${summary ? `: ${summary}` : ""}`);
       }
       return parsed.suggestions;
     };

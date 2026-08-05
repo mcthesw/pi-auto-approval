@@ -23,6 +23,7 @@ export type RuleSuggestion = {
 export type AdvisorParseResult = {
   suggestions: RuleSuggestion[];
   hadProposals: boolean;
+  rejectionReasons: string[];
 };
 
 export class AdvisorResponseError extends Error {
@@ -96,6 +97,7 @@ export function parseAdvisorResponseDetailed(
   const seenMatchers = new Set(existing);
   const seenReplacementIds = new Set<string>();
   const suggestions: RuleSuggestion[] = [];
+  const rejectionReasons: string[] = [];
   for (let index = 0; index < root.proposals.length; index += 1) {
     const at = `response.proposals[${index}]`;
     try {
@@ -133,7 +135,10 @@ export function parseAdvisorResponseDetailed(
       }
       const replacedKeys = new Set(replacesRuleIds.map((id) => scopedMatcherKey("project", projectRules.get(id)!.matcher)));
       const key = scopedMatcherKey(input.scope as RuleScope, matcher);
-      if (seenMatchers.has(key) && !replacedKeys.has(key)) continue;
+      if (seenMatchers.has(key) && !replacedKeys.has(key)) {
+        rejectionReasons.push(`${at} duplicates an existing or earlier Rule matcher in the same scope`);
+        continue;
+      }
       replacesRuleIds.forEach((id) => seenReplacementIds.add(id));
       seenMatchers.add(key);
       suggestions.push({
@@ -146,9 +151,10 @@ export function parseAdvisorResponseDetailed(
       });
     } catch (error) {
       if (!(error instanceof AdvisorResponseError) && !(error instanceof ConfigValidationError)) throw error;
+      rejectionReasons.push(error.message);
     }
   }
-  return { suggestions, hadProposals: root.proposals.length > 0 };
+  return { suggestions, hadProposals: root.proposals.length > 0, rejectionReasons };
 }
 
 export function parseAdvisorResponse(

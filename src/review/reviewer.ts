@@ -13,7 +13,7 @@ import { prepareReviewBatchContext, type ReviewBatchRequest, type ReviewRequest 
 import { buildReviewBatchPrompt, REVIEW_SYSTEM_PROMPT } from "./prompt.ts";
 import {
   parseReviewBatchResponse,
-  STRUCTURED_RESPONSE_CORRECTION_PROMPT,
+  structuredResponseCorrectionPrompt,
   type ReviewBatchResult,
   type ReviewResult,
 } from "./schema.ts";
@@ -328,8 +328,8 @@ export class AutomatedReviewer {
       const initial = await send(prompt);
       try {
         return parse(initial);
-      } catch {
-        return parse(await send(STRUCTURED_RESPONSE_CORRECTION_PROMPT));
+      } catch (error) {
+        return parse(await send(structuredResponseCorrectionPrompt(error)));
       }
     }, signal);
   }

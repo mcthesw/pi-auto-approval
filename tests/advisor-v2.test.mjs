@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RuleAdvisor } from "../src/advisor/advisor.ts";
-import { parseAdvisorResponse } from "../src/advisor/schema.ts";
+import { parseAdvisorResponse, parseAdvisorResponseDetailed } from "../src/advisor/schema.ts";
 import { buildAdvisorPrompt } from "../src/advisor/prompt.ts";
 
 const source = { source: "mcp", path: "context7" };
@@ -67,6 +67,22 @@ test("Advisor retains valid siblings, rejects made-up sources, and allows projec
   assert.equal(suggestions[0].scope, "project");
 });
 
+test("Advisor reports why malformed proposals were rejected", () => {
+  const parsed = parseAdvisorResponseDetailed(JSON.stringify({
+    proposals: [{
+      action: "allow",
+      matcher: { tool: "context7_query-docs", input: [] },
+      scope: "global",
+      rationale: "invalid matcher",
+      supportingRecordIds: ["record-1"],
+      replacesRuleIds: [],
+    }],
+  }), context());
+  assert.deepEqual(parsed.suggestions, []);
+  assert.equal(parsed.hadProposals, true);
+  assert.match(parsed.rejectionReasons[0], /matcher\.input: expected an object/);
+});
+
 test("Advisor ignores malformed matchers and retains valid sibling proposals", () => {
   const suggestions = parseAdvisorResponse(JSON.stringify({
     proposals: [
@@ -121,7 +137,13 @@ test("Rule Advisor requests correction when every non-empty proposal is invalid"
     completeStructured: async (...args) => {
       const parse = args[5];
       parseAttempts += 1;
-      assert.throws(() => parse(JSON.stringify({ proposals: [{ action: "review" }] })));
+      let message = "";
+      try {
+        parse(JSON.stringify({ proposals: [{ action: "review" }] }));
+      } catch (error) {
+        message = error.message;
+      }
+      assert.match(message, /response\.proposals\[0\]\.action/);
       parseAttempts += 1;
       return parse(JSON.stringify({ proposals: [{
         action: "allow",
