@@ -6,6 +6,8 @@ import type { ToolCall } from "./src/domain.ts";
 import { resolveProjectIdentity, type ProjectIdentity } from "./src/project.ts";
 import { AutomatedReviewer, PiReviewSessionFactory } from "./src/review/reviewer.ts";
 import type { ReviewToolMetadata } from "./src/review/context.ts";
+import { TurnReviewBatchCoordinator, type TurnReviewCall } from "./src/review/turn-batch.ts";
+import { runWithAsyncLoader } from "./src/ui/async-loader.ts";
 import { openAutoApprovalSettings } from "./src/ui/settings.ts";
 import { toolSourceIdentity } from "./src/tool-identity.ts";
 import { FrictionHistoryStore, frictionHistoryFile } from "./src/friction/store.ts";
@@ -42,6 +44,42 @@ async function projectIdentity(pi: ExtensionAPI, cwd: string): Promise<ProjectId
   });
 }
 
+function assistantTurnCalls(entries: readonly unknown[], current: ToolCall, tools: readonly ToolInfo[]): TurnReviewCall[] {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (typeof entry !== "object" || entry === null) continue;
+    const message = (entry as { type?: unknown; message?: unknown }).type === "message"
+      ? (entry as { message?: unknown }).message
+      : undefined;
+    if (typeof message !== "object" || message === null || (message as { role?: unknown }).role !== "assistant") continue;
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) break;
+    const calls = content.flatMap((part): TurnReviewCall[] => {
+      if (typeof part !== "object" || part === null || (part as { type?: unknown }).type !== "toolCall") return [];
+      const item = part as { id?: unknown; name?: unknown; arguments?: unknown };
+      if (typeof item.id !== "string" || typeof item.name !== "string") return [];
+      const call = item.id === current.id ? current : { id: item.id, name: item.name, input: item.arguments };
+      const tool = tools.find((candidate) => candidate.name === call.name);
+      return [{ call, toolSource: toolSourceIdentity(tool), tool: reviewMetadata(tool) }];
+    });
+    return calls.some((item) => item.call.id === current.id) ? calls : [{ call: current }];
+  }
+  return [{ call: current }];
+}
+
+function reviewSummary(result: { decisions: ReadonlyMap<string, { decision: "allow" | "ask" | "deny" }> }): {
+  text: string;
+  level: "info" | "warning" | "error";
+} {
+  const counts = { allow: 0, ask: 0, deny: 0 };
+  result.decisions.forEach((decision) => { counts[decision.decision] += 1; });
+  const total = counts.allow + counts.ask + counts.deny;
+  return {
+    text: `Automated Review · ${total} Tool Call${total === 1 ? "" : "s"}: ${counts.allow} Allow · ${counts.ask} Ask · ${counts.deny} Deny`,
+    level: counts.deny ? "error" : counts.ask ? "warning" : "info",
+  };
+}
+
 export type AutoApprovalRuntimeOptions = {
   agentDir?: string;
   createReviewer?: () => Promise<AutomatedReviewer>;
@@ -55,6 +93,7 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
     let reviewer: AutomatedReviewer | undefined;
     let reviewerInitializationError: string | undefined;
     let frictionWarningShown = false;
+    const reviewBatches = new TurnReviewBatchCoordinator();
 
     const initializeReviewer = async (): Promise<AutomatedReviewer | undefined> => {
       if (reviewer) return reviewer;
@@ -121,9 +160,11 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
     const call: ToolCall = { id: event.toolCallId, name: event.toolName, input: event.input };
     try {
       const project = await projectIdentity(pi, ctx.cwd);
-      const tool = pi.getAllTools().find((candidate) => candidate.name === call.name);
+      const tools = pi.getAllTools();
+      const tool = tools.find((candidate) => candidate.name === call.name);
       const activeReviewer = await initializeReviewer();
-      const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
+      const entries = await ctx.sessionManager.buildContextEntries();
+      const messages = entries.flatMap(sessionEntryToContextMessages);
       return await decideToolCall(ctx, call, {
         store,
         reviewer: activeReviewer,
@@ -132,6 +173,31 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
         toolSource: toolSourceIdentity(tool),
         messages,
         tool: reviewMetadata(tool),
+        review: async (config, request, signal) => {
+          if (!activeReviewer || !config.reviewer) throw new Error("Automated Review is not configured");
+          return reviewBatches.review({
+            current: { call: request.toolCall, toolSource: toolSourceIdentity(tool), tool: reviewMetadata(tool) },
+            siblings: assistantTurnCalls(entries, request.toolCall, tools),
+            config,
+            project,
+            cwd: ctx.cwd,
+            messages,
+            run: async (batch) => {
+              const outcome = await runWithAsyncLoader(
+                ctx,
+                `Automated Review: ${batch.calls.length} Tool Call${batch.calls.length === 1 ? "" : "s"}…`,
+                (batchSignal) => activeReviewer.reviewBatch(config.reviewer!, batch, batchSignal),
+              );
+              if (outcome.status === "cancelled") throw new DOMException("Automated Review was cancelled", "AbortError");
+              if (outcome.status === "failed") throw outcome.error;
+              if (ctx.hasUI) {
+                const summary = reviewSummary(outcome.value);
+                ctx.ui.notify(summary.text, summary.level);
+              }
+              return outcome.value;
+            },
+          });
+        },
         recordFriction: async (record) => {
           try {
             await frictionStore.append(project.key, record);
@@ -154,7 +220,16 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
     }
   });
 
+    pi.on("turn_end", async (event) => {
+      if (event.message.role !== "assistant") return;
+      const ids = event.message.content
+        .filter((part) => part.type === "toolCall")
+        .map((part) => part.id);
+      reviewBatches.clear(ids);
+    });
+
     pi.on("session_shutdown", async (_event, ctx) => {
+      reviewBatches.clearAll();
       ctx.ui.setStatus(STATUS_KEY, undefined);
     });
   };

@@ -37,7 +37,7 @@ The minimal built-in defaults are quiet for ordinary coding work:
 - Project-local `write` and `edit` are allowed except for `.git`, `.pi`, `.agents`, and `AGENTS.md` control paths.
 - Project-external paths, Bash, control paths, and other tools go to the Reviewer.
 
-The Reviewer may allow a one-off project-external operation when the user explicitly requested it. Pi Auto Approval is an authorization layer, not an OS sandbox.
+The Reviewer may allow a one-off project-external operation when the user explicitly requested it. When one agent turn emits several calls that all need review, Pi Auto Approval sends them in one isolated Review Batch and keeps an independent Allow, Ask, or Deny result for every call. Rules and user confirmations remain per-call. Pi Auto Approval is an authorization layer, not an OS sandbox.
 
 Rules run before defaults. Project Rules take precedence over Global Rules. Within one scope, all matching Rules are considered and the more restrictive action wins: `deny > ask > allow`. Identical matchers are unique within a scope, so editing the action updates that Rule instead of creating a conflict.
 

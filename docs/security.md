@@ -37,14 +37,16 @@ Bash has no hidden command allowlist. Pi Auto Approval only conservatively token
 
 The Reviewer receives untrusted evidence, not instructions:
 
-- exact current Tool Call JSON, subject to a hard size limit;
-- bounded transcript excerpts and recent user intent;
+- exact current Tool Call JSON for each item in a Review Batch;
+- bounded transcript excerpts and recent user intent shared by that batch;
 - explicit cwd and project root;
-- limited metadata for the current tool.
+- limited metadata for every reviewed tool.
+
+A Review Batch contains only the Review-Eligible calls from one assistant tool-calling message. It preserves source order and caps one request at 16 calls or 256KiB of exact Tool Call JSON; an individual call over the existing 64KiB limit goes directly to User Confirmation without blocking its siblings. The Reviewer must return one independently validated decision for every input ID. A saved Rule is re-evaluated before every sibling runs, so it immediately takes precedence over a cached Batch result.
 
 Every review creates a fresh in-memory session with no tools or project resources. Its operational cwd is the filesystem root because Pi appends session cwd to custom system prompts; the actual project cwd is supplied only as marked untrusted evidence. The Reviewer can allow a one-time project-external read or write when user intent is clear. It can also be wrong; that is why it does not create an OS boundary.
 
-Malformed output, missing configuration, timeouts, runtime failure, or oversized Tool Calls ask with UI and deny without it. Caller cancellation denies without another prompt. An invalid Rule suggestion is discarded independently of an otherwise valid Reviewer decision; confirmation falls back to a Project Exact Rule.
+When a structured Reviewer or Rule Advisor response is invalid, the same isolated session receives one fixed correction request within the original 60-second budget. A Reviewer Batch remains all-or-nothing: a second invalid response makes every item ask with UI and deny without it. Missing configuration, timeouts, runtime failure, and oversized Tool Calls also ask with UI and deny without it. Caller cancellation denies without another prompt. An invalid Rule suggestion is discarded independently of an otherwise valid Reviewer decision; confirmation falls back to a Project Exact Rule.
 
 ## Advisor and history
 

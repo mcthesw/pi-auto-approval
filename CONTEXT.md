@@ -49,8 +49,20 @@ A request for the user to choose whether one specific **Tool Call** may execute.
 _Avoid_: Assumed consent
 
 **Reviewer**:
-An isolated automated decision-maker that evaluates one **Tool Call** when no Rule or minimal default resolves it.
+An isolated automated decision-maker that evaluates **Review-Eligible Tool Calls**.
 _Avoid_: Main Agent, sandbox
+
+**Review-Eligible Tool Call**:
+A **Tool Call** for which neither a **Rule** nor a minimal default has returned Allow, Ask, or Deny.
+_Avoid_: An Ask Rule match
+
+**Review Batch**:
+The **Review-Eligible Tool Calls** emitted by one assistant tool-calling message, evaluated by one **Reviewer** request while retaining an independent decision for each call.
+_Avoid_: One shared authorization decision
+
+**Correction Retry**:
+One request within the same isolated model session to repair an invalid structured response without changing the original request or authorization boundary.
+_Avoid_: A new review, a permission retry
 
 **Friction Record**:
 A bounded, lossy record of a **Tool Call** that required review or confirmation.

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
+  AutoApprovalConfig,
   FrictionRecord,
   ProjectConfig,
   ReviewDecision,
@@ -26,7 +27,8 @@ import type { AutoApprovalConfigStore } from "./config/store.ts";
 import { confirmToolCall } from "./approval/confirmation.ts";
 import type { AutomatedReviewer } from "./review/reviewer.ts";
 import type { ReviewRuleSuggestion } from "./review/schema.ts";
-import type { ReviewToolMetadata } from "./review/context.ts";
+import type { ReviewRequest, ReviewToolMetadata } from "./review/context.ts";
+import type { ReviewResult } from "./review/schema.ts";
 import { createFrictionRecord } from "./friction/summary.ts";
 import { runWithAsyncLoader } from "./ui/async-loader.ts";
 
@@ -53,6 +55,7 @@ export type DecisionDependencies = {
   toolSource?: ToolSourceIdentity;
   messages: readonly unknown[];
   tool?: ReviewToolMetadata;
+  review?: (config: AutoApprovalConfig, request: ReviewRequest, signal?: AbortSignal) => Promise<ReviewResult>;
   recordFriction?: (record: FrictionRecord) => Promise<void>;
 };
 
@@ -262,22 +265,23 @@ export async function decideToolCall(
   }
 
   try {
-    const outcome = await runWithAsyncLoader(ctx, `Automated Review: ${noticeText(call.name)}…`, (signal) =>
-      dependencies.reviewer!.review(
-        loaded.config.reviewer!,
-        {
-          toolCall: call,
-          cwd: ctx.cwd,
-          projectRoot: dependencies.project.root,
-          messages: dependencies.messages,
-          tool: dependencies.tool,
-        },
-        signal,
-      ));
-    if (outcome.status === "cancelled") return { block: true, reason: "Automated Review was cancelled" };
-    if (outcome.status === "failed") throw outcome.error;
-    const review = outcome.value;
-    notifyReviewDecision(ctx, call, review.decision, review.reason);
+    const request: ReviewRequest = {
+      toolCall: call,
+      cwd: ctx.cwd,
+      projectRoot: dependencies.project.root,
+      messages: dependencies.messages,
+      tool: dependencies.tool,
+    };
+    const review = dependencies.review
+      ? await dependencies.review(loaded.config, request, ctx.signal)
+      : await (async () => {
+        const outcome = await runWithAsyncLoader(ctx, `Automated Review: ${noticeText(call.name)}…`, (signal) =>
+          dependencies.reviewer!.review(loaded.config.reviewer!, request, signal));
+        if (outcome.status === "cancelled") throw new DOMException("Automated Review was cancelled", "AbortError");
+        if (outcome.status === "failed") throw outcome.error;
+        return outcome.value;
+      })();
+    if (!dependencies.review) notifyReviewDecision(ctx, call, review.decision, review.reason);
     if (review.decision === "allow") {
       await recordFriction(dependencies, call, "allow");
       return undefined;
