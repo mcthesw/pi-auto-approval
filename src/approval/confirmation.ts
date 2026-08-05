@@ -29,7 +29,7 @@ async function customConfirmation(ctx: ExtensionContext, request: UserConfirmati
     new ApprovalConfirmationComponent(tui, theme, done, {
       title: "Tool approval required",
       detail: `${request.reason} — ${previewCall(request.call)}`,
-      matcherSummary: request.proposals.map((proposal) => matcherSummary(proposal.matcher)).join("\n    "),
+      matcherSummaries: request.proposals.map((proposal) => matcherSummary(proposal.matcher)),
     }),
   );
   return result ?? { kind: "cancelled" };

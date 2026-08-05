@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { ApprovalConfirmationComponent } from "../src/approval/confirmation-component.ts";
 
 const theme = { fg: (_color, text) => text, bold: (text) => text, dim: (text) => text };
@@ -9,9 +10,26 @@ function component(done) {
   return new ApprovalConfirmationComponent(tui, theme, done, {
     title: "Tool approval required",
     detail: "needs a decision",
-    matcherSummary: "Bash(cargo fmt *)",
+    matcherSummaries: ["Bash(cargo fmt *)"],
   });
 }
+
+test("confirmation renders one bounded terminal line per output item", () => {
+  const view = new ApprovalConfirmationComponent(tui, theme, () => {}, {
+    title: "Tool approval\nrequired",
+    detail: "compound\nrequest",
+    matcherSummaries: [
+      "Bash(git diff *)\nBash(git status *)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm test *)",
+      "Bash(git push *)",
+    ],
+  });
+  const lines = view.render(28);
+  assert.ok(lines.every((line) => !line.includes("\n") && !line.includes("\r")));
+  assert.ok(lines.every((line) => visibleWidth(line) <= 28));
+  assert.ok(lines.some((line) => line.includes("1 more Rules")));
+});
 
 test("confirmation offers allow once, persistent Rule, and denial feedback", () => {
   let result;

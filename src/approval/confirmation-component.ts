@@ -12,8 +12,14 @@ type Theme = ExtensionContext["ui"]["theme"];
 type ConfirmationComponentOptions = {
   title: string;
   detail: string;
-  matcherSummary: string;
+  matcherSummaries: readonly string[];
 };
+
+const MAX_MATCHER_PREVIEW_LINES = 3;
+
+function singleLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
 
 export class ApprovalConfirmationComponent implements Component {
   private selected = 0;
@@ -74,23 +80,35 @@ export class ApprovalConfirmationComponent implements Component {
   }
 
   render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
     const line = (index: number, label: string) => {
       const marker = this.selected === index ? this.theme.fg("accent", "❯") : " ";
       const text = this.selected === index ? this.theme.fg("accent", label) : label;
-      return truncateToWidth(`${marker} ${text}`, width);
+      return truncateToWidth(`${marker} ${text}`, safeWidth);
     };
-    const nestedWidth = Math.max(8, width - 4);
+    const matcherLines = this.options.matcherSummaries
+      .slice(0, MAX_MATCHER_PREVIEW_LINES)
+      .map((summary) => this.theme.fg("muted", truncateToWidth(`    ${singleLine(summary)}`, safeWidth)));
+    if (this.options.matcherSummaries.length > MAX_MATCHER_PREVIEW_LINES) {
+      matcherLines.push(this.theme.fg("muted", truncateToWidth(
+        `    … ${this.options.matcherSummaries.length - MAX_MATCHER_PREVIEW_LINES} more Rules`,
+        safeWidth,
+      )));
+    }
+    const nestedWidth = Math.max(1, safeWidth - 4);
+    const feedbackLines = this.feedbackInput.render(nestedWidth)
+      .map((value) => truncateToWidth(`    ${value}`, safeWidth));
     const lines = [
-      this.theme.bold(truncateToWidth(this.options.title, width)),
-      this.theme.fg("muted", truncateToWidth(this.options.detail, width)),
+      this.theme.bold(truncateToWidth(singleLine(this.options.title), safeWidth)),
+      this.theme.fg("muted", truncateToWidth(singleLine(this.options.detail), safeWidth)),
       "",
       line(0, "Allow once"),
       line(1, "Always allow with Rule"),
-      this.theme.fg("muted", truncateToWidth(`    ${this.options.matcherSummary}`, width)),
+      ...matcherLines,
       line(2, "Deny (optional feedback):"),
-      ...this.feedbackInput.render(nestedWidth).map((value) => `    ${value}`),
+      ...feedbackLines,
     ];
-    lines.push("", this.theme.fg("dim", truncateToWidth("↑/↓ choose • Enter confirm • Esc cancel", width)));
+    lines.push("", this.theme.fg("dim", truncateToWidth("↑/↓ choose • Enter confirm • Esc cancel", safeWidth)));
     return lines;
   }
 
