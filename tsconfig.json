@@ -11,5 +11,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["index.ts", "src/**/*"]
+  "include": ["index.ts", "src/**/*", "scripts/**/*"]
 }

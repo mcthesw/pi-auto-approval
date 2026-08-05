@@ -23,7 +23,8 @@
   },
   "scripts": {
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval:reviewer": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/eval-reviewer.ts"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -51,6 +52,8 @@
   "files": [
     "index.ts",
     "src",
+    "scripts",
+    "eval",
     "README.md",
     "CONTEXT.md",
     "docs",
