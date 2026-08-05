@@ -1,134 +1,90 @@
 # Pi Auto Approval
 
-A [Pi](https://github.com/badlogic/pi-mono) extension that resolves known Tool Calls with explicit Rules and sends everything else to an isolated Reviewer.
+A [Pi](https://github.com/badlogic/pi-mono) extension that resolves Tool Calls with explicit Rules and sends everything else to an isolated Reviewer.
 
 ```text
 Tool Call
-  -> Project Rules
-  -> Global Rules
-  -> minimal built-in defaults
-  -> fresh tool-less Reviewer
-       -> allow | ask | deny
+  → Project Rules
+  → Global Rules
+  → minimal built-in defaults
+  → fresh tool-less Reviewer
+       → allow | ask | deny
 ```
 
-A Rule is always the same thing: a tool and structured parameter matcher, an action (`allow`, `ask`, or `deny`), and a scope (current project or global).
+A Rule combines a tool/input matcher, an action (`allow`, `ask`, or `deny`), and a Project or Global scope.
 
 ## Install
 
 Pi packages execute with full system access. Review this repository before installing it.
 
 ```sh
-pi install git:github.com/mcthesw/pi-extension-auto-approval
+pi install git:github.com/mcthesw/pi-auto-approval
 ```
 
-Restart Pi, then run `/auto-approval` to select an authenticated Reviewer model. The settings menu has only three entries:
+Restart Pi, run `/auto-approval`, and choose an authenticated Reviewer model. No npm package has been released yet.
 
-- **Rules** — current Project and Global Rules
-- **Suggestions** — Rule Advisor proposals from recent approval friction
-- **Reviewer** — the explicit model and thinking level
+## Behavior
 
-No npm package has been released yet.
+The built-in defaults allow ordinary project-local work:
 
-## Defaults and Rules
+- `read`, `grep`, `find`, and `ls`, including `.env` files;
+- `write` and `edit`, except `.git`, `.pi`, `.agents`, and `AGENTS.md` control paths.
 
-The minimal built-in defaults are quiet for ordinary coding work:
+Project-external paths, Bash, control paths, and other tools go to the Reviewer. Several review-eligible calls from one agent turn share one Review Batch while retaining independent decisions. This extension is an authorization layer, not an OS sandbox.
 
-- Project-local `read`, `grep`, `find`, and `ls` are allowed, including `.env` files.
-- Project-local `write` and `edit` are allowed except for `.git`, `.pi`, `.agents`, and `AGENTS.md` control paths.
-- Project-external paths, Bash, control paths, and other tools go to the Reviewer.
+Project Rules take precedence over Global Rules. Within one scope, all matches are considered and the stricter action wins: `deny > ask > allow`.
 
-The Reviewer may allow a one-off project-external operation when the user explicitly requested it. When one agent turn emits several calls that all need review, Pi Auto Approval sends them in one isolated Review Batch and keeps an independent Allow, Ask, or Deny result for every call. Rules and user confirmations remain per-call. Pi Auto Approval is an authorization layer, not an OS sandbox.
+Matchers support:
 
-Rules run before defaults. Project Rules take precedence over Global Rules. Within one scope, all matching Rules are considered and the more restrictive action wins: `deny > ask > allow`. Identical matchers are unique within a scope, so editing the action updates that Rule instead of creating a conflict.
+- all calls for one tool;
+- exact input;
+- exact top-level fields;
+- Bash token prefixes, displayed as `Bash(cargo fmt *)`;
+- file `pathGlob` values.
 
-Bash Rules use conservative argv-prefix semantics but familiar display text:
+Compound Bash calls are resolved segment by segment. Unresolved or conservatively unparsable commands go to the Reviewer.
+
+## Interface
+
+`/auto-approval` contains:
+
+- **Rules** — create, edit, or delete Project and Global Rules;
+- **Suggestions** — review Rules proposed from recent approval friction;
+- **Reviewer** — choose the explicit model and thinking level.
+
+A Tool Call requiring confirmation offers:
+
+- **Allow once**;
+- **Allow with Rule**;
+- **Deny**, with optional feedback for the Main Agent.
+
+`Allow with Rule` opens a Review Rules list. All proposed Rules start selected; Suggestions start unselected.
 
 ```text
-Allow · Global  Bash(cargo fmt *)
-Allow · Global  context7:query-docs
-Ask   · Project Read(.env)
+↑/↓  move
+Space select
+E     view or edit
+Enter save
+Esc   back
 ```
 
-For compound Bash calls, each visible command segment must be resolved; an unresolved or unparsable segment goes to the Reviewer. A whole-call Exact Rule remains authoritative.
+Rule editing uses one screen for action, scope, match type, constraints, and advanced JSON. Use `←/→` to change discrete fields quickly. Tool Call approval also provides `V` to inspect the full call before deciding.
 
-## User confirmation
+## Storage and security
 
-When a call needs confirmation, choose one of:
-
-- **Allow once**
-- **Always allow with Rule**
-- **Deny** — optionally include feedback for the Main Agent
-
-The Reviewer may propose a matcher and scope. The proposal is editable and inactive until you save it. If a proposal is invalid or unavailable, Pi Auto Approval falls back to a Project Exact Rule. New rules for external tools automatically bind reliable Pi source identity when available; the source is shown only in Rule details.
-
-## Configuration
-
-Configuration lives outside the repository:
+Configuration is stored outside repositories:
 
 ```text
 ~/.pi/agent/auto-approval.json
 ```
 
-It is strictly validated, protected by an inter-process lock, and atomically written. Version 1 files are read as version 2 automatically: old Approval and Policy Rules become Rules, `auto_review` entries are removed, and duplicate matchers retain the most restrictive action. The next successful write uses version 2.
+It is strictly validated, inter-process locked, and atomically written. Invalid configuration never grants permission: interactive sessions ask; non-interactive sessions deny. Version 1 configuration is migrated automatically when read and only version 2 is written.
 
-```json
-{
-  "version": 2,
-  "reviewer": {
-    "provider": "openai",
-    "modelId": "gpt-5.4-mini",
-    "thinkingLevel": "low"
-  },
-  "globalRules": [
-    {
-      "id": "context7-docs",
-      "action": "allow",
-      "matcher": {
-        "tool": "context7_query-docs",
-        "source": { "source": "mcp", "path": "context7" },
-        "input": { "kind": "any" }
-      }
-    }
-  ],
-  "projects": {
-    "/canonical/project/root": {
-      "rules": [
-        {
-          "id": "format",
-          "action": "allow",
-          "matcher": {
-            "tool": "bash",
-            "input": {
-              "kind": "fields",
-              "fields": {
-                "command": { "kind": "tokenPrefix", "tokens": ["cargo", "fmt"] }
-              }
-            }
-          }
-        }
-      ]
-    }
-  }
-}
-```
+Every Automated Review uses a fresh in-memory Pi session with no tools, extensions, skills, or persistent history. The real Tool Call, cwd, and bounded conversation context are supplied only as untrusted evidence.
 
-Matchers support whole-tool, whole-input Exact, top-level field Exact, Bash token prefix, and file `pathGlob`. Project path globs are project-relative; Global path globs must be absolute or home-anchored. No regex, JSONPath, nested conditions, or Bash middle wildcards are supported. Invalid configuration never grants permission: interactive sessions ask, while non-interactive sessions deny.
+The Rule Advisor runs only when **Suggestions** is opened. It reads at most 50 lossy Friction Records from the last seven days; it stores no Tool Results or conversation transcript.
 
-## Reviewer and Advisor
-
-Every review uses a fresh in-memory Pi session with no tools, extensions, skills, prompts, themes, or persistent history. Its operational cwd is intentionally separate from the project cwd; the real cwd, Tool Call, limited metadata, and bounded conversation context are untrusted evidence.
-
-The Rule Advisor is manually invoked from **Suggestions**. It reads at most 50 lossy Friction Records from the last seven days and proposes at most 10 ordinary Rules. Suggestions may use any valid action, scope, and matcher, but all start unselected and only save after explicit user confirmation. Friction History stores no Tool Results or conversation transcript.
-
-## Reviewer eval
-
-The fixed adversarial corpus is a manual quality check, not a CI dependency:
-
-```sh
-pnpm eval:reviewer
-```
-
-It uses the Reviewer configured in `~/.pi/agent/auto-approval.json`, prints each expected and actual decision, and exits non-zero on a mismatch. CI runs only deterministic typecheck and unit tests.
+See [`docs/security.md`](docs/security.md) for the trust boundary and [`CONTEXT.md`](CONTEXT.md) for domain terminology.
 
 ## Development
 
@@ -139,7 +95,7 @@ pnpm test
 pnpm pack --dry-run
 ```
 
-See [`docs/security.md`](docs/security.md) for the trust boundary, [`CONTEXT.md`](CONTEXT.md) for the glossary, and [`docs/adr`](docs/adr) for historical decisions.
+The manual adversarial Reviewer corpus can be run with `pnpm eval:reviewer`; deterministic CI runs typecheck and unit tests only.
 
 ## Provenance
 
