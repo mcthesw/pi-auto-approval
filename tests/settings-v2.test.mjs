@@ -101,7 +101,7 @@ test("matcher edits retain the latest action from another Pi process", async () 
   });
 });
 
-test("matcher edits reject duplicate matchers without replacing their Rule", async () => {
+test("matcher edits merge duplicates and preserve the more restrictive action", async () => {
   await withSettings(async ({ directory, store }) => {
     const first = { id: "first", action: "allow", matcher: { tool: "read", input: { kind: "any" } } };
     const second = { id: "second", action: "deny", matcher: { tool: "read", input: { kind: "exact", value: { path: "secret" } } } };
@@ -141,10 +141,11 @@ test("matcher edits reject duplicate matchers without replacing their Rule", asy
     assert.equal(loaded.ok, true);
     if (loaded.ok) {
       const rules = loaded.config.projects[directory].rules;
-      assert.equal(rules.find((rule) => rule.id === "first").action, "allow");
-      assert.equal(rules.find((rule) => rule.id === "first").matcher.input.kind, "any");
-      assert.equal(rules.find((rule) => rule.id === "second").action, "deny");
+      assert.equal(rules.length, 1);
+      assert.equal(rules[0].id, "second");
+      assert.equal(rules[0].action, "deny");
+      assert.deepEqual(rules[0].matcher, second.matcher);
     }
-    assert.ok(notices.some((message) => message.includes("already exists")));
+    assert.ok(notices.some((message) => message.includes("Merged with the matching Rule")));
   });
 });

@@ -59,19 +59,28 @@ function locateRule(config: AutoApprovalConfig, projectKey: string, id: string):
   return global ? { scope: "global", rule: global } : undefined;
 }
 
-function replaceRule(config: AutoApprovalConfig, projectKey: string, id: string, matcher: ToolMatcher, scope: RuleScope): void {
+function moreRestrictiveAction(left: RuleAction, right: RuleAction): RuleAction {
+  const rank: Record<RuleAction, number> = { allow: 0, ask: 1, deny: 2 };
+  return rank[left] >= rank[right] ? left : right;
+}
+
+function replaceRule(config: AutoApprovalConfig, projectKey: string, id: string, matcher: ToolMatcher, scope: RuleScope): boolean {
   const current = locateRule(config, projectKey, id);
   if (!current) throw new Error("Rule changed or was removed by another Pi process");
   const source = current.scope === "global" ? config.globalRules : projectRules(config, projectKey);
   const sourceIndex = source.findIndex((rule) => rule.id === id);
   if (sourceIndex < 0) throw new Error("Rule changed or was removed by another Pi process");
   const target = scope === "global" ? config.globalRules : projectRules(config, projectKey);
-  if (target.some((rule) => rule.id !== id && matcherKey(rule.matcher) === matcherKey(matcher))) {
-    throw new Error("A Rule with this matcher already exists in that scope");
+  const existing = target.find((rule) => rule.id !== id && matcherKey(rule.matcher) === matcherKey(matcher));
+  if (existing) {
+    existing.action = moreRestrictiveAction(existing.action, current.rule.action);
+    source.splice(sourceIndex, 1);
+    return true;
   }
   const action = current.rule.action;
   source.splice(sourceIndex, 1);
   target.push({ id, action, matcher: structuredClone(matcher) });
+  return false;
 }
 
 async function chooseReviewerModel(ctx: ExtensionContext, models: ReviewerModelOption[]): Promise<ReviewerModelOption | undefined> {
@@ -193,9 +202,13 @@ async function manageRule(ctx: ExtensionContext, dependencies: SettingsDependenc
     });
   } else if (selected === "Edit matcher") {
     const edited = await editRuleMatcher(ctx, { initial: initial.rule.matcher, initialScope: initial.scope, toolSource: initial.rule.matcher.source });
-    if (edited) await mutate(ctx, dependencies.store, (config) => {
-      replaceRule(config, dependencies.projectKey, initial.rule.id, edited.matcher, edited.scope);
-    });
+    if (edited) {
+      let merged = false;
+      const saved = await mutate(ctx, dependencies.store, (config) => {
+        merged = replaceRule(config, dependencies.projectKey, initial.rule.id, edited.matcher, edited.scope);
+      });
+      if (saved && merged) ctx.ui.notify("Merged with the matching Rule; kept the more restrictive action.", "info");
+    }
   }
 }
 

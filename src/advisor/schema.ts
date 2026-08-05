@@ -1,5 +1,5 @@
 import type { FrictionRecord, Rule, RuleAction, ToolMatcher, ToolSourceIdentity } from "../domain.ts";
-import { parseToolMatcher } from "../config/schema.ts";
+import { ConfigValidationError, parseToolMatcher } from "../config/schema.ts";
 import { isStandardToolName, matcherKey, type RuleScope } from "../matchers.ts";
 
 const MAX_RESPONSE_CHARS = 32_768;
@@ -140,7 +140,7 @@ export function parseAdvisorResponse(
         replacesRuleIds,
       });
     } catch (error) {
-      if (!(error instanceof AdvisorResponseError)) throw error;
+      if (!(error instanceof AdvisorResponseError) && !(error instanceof ConfigValidationError)) throw error;
     }
   }
   return suggestions;

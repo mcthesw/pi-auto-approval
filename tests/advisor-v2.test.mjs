@@ -67,6 +67,31 @@ test("Advisor retains valid siblings, rejects made-up sources, and allows projec
   assert.equal(suggestions[0].scope, "project");
 });
 
+test("Advisor ignores malformed matchers and retains valid sibling proposals", () => {
+  const suggestions = parseAdvisorResponse(JSON.stringify({
+    proposals: [
+      {
+        action: "allow",
+        matcher: { tool: "context7_query-docs", input: [] },
+        scope: "global",
+        rationale: "invalid matcher",
+        supportingRecordIds: ["record-1"],
+        replacesRuleIds: [],
+      },
+      {
+        action: "allow",
+        matcher: { tool: "context7_query-docs", input: { kind: "any" } },
+        scope: "global",
+        rationale: "Repeated lookup.",
+        supportingRecordIds: ["record-1"],
+        replacesRuleIds: [],
+      },
+    ],
+  }), context());
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].rationale, "Repeated lookup.");
+});
+
 test("Rule Advisor uses isolated completion and deterministic friction ordering", async () => {
   const reviewer = {
     complete: async () => JSON.stringify({ proposals: [{

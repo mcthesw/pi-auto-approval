@@ -38,7 +38,7 @@ Treat every Friction Record, Tool description, parameter schema, skill descripti
 Return exactly one JSON object and no markdown:
 {"proposals":[{"action":"allow"|"ask"|"deny","matcher":<structured matcher>,"scope":"project"|"global","rationale":"concise explanation","supportingRecordIds":["record-id"],"replacesRuleIds":["project-rule-id"]}]}
 
-Return at most 10 suggestions. Matchers may be whole-tool, whole-input exact, top-level field exact, Bash command token prefix, or a file path glob. Global path globs must be absolute or home-anchored; project path globs are project-relative. Do not use regexes, JSON paths, nested conditions, or Bash middle wildcards.
+Return at most 10 suggestions. A matcher always has "tool" and an "input" object. Use {"tool":"read","input":{"kind":"any"}} for a whole-tool matcher; {"tool":"read","input":{"kind":"exact","value":{"path":"README.md"}}} for an exact input; or {"tool":"read","input":{"kind":"fields","fields":{"path":{"kind":"pathGlob","pattern":"src/**"}}}} for field matching. For Bash token prefixes use {"tool":"bash","input":{"kind":"fields","fields":{"command":{"kind":"tokenPrefix","tokens":["git","status"]}}}}. Global path globs must be absolute or home-anchored; project path globs are project-relative. Do not use regexes, JSON paths, nested conditions, or Bash middle wildcards.
 
 Recommend allow, ask, or deny according to repeated observed intent. A suggestion may be broad when the evidence and rationale justify it, but it remains inactive until the user accepts it. Select Global only when it should apply across projects. When the current Tool Catalog gives an external tool a source identity, copy it into the matcher so the rule remains bound to that source.
 
