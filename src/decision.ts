@@ -4,6 +4,7 @@ import type {
   FrictionRecord,
   ProjectConfig,
   ReviewDecision,
+  Rule,
   ToolCall,
   ToolMatcher,
   ToolSourceIdentity,
@@ -12,17 +13,19 @@ import type {
 import {
   exactMatcherFor,
   isStandardToolName,
-  isToolWideMatcher,
+  matcherKey,
   matchesToolCall,
   validateToolMatcher,
   type MatcherContext,
+  type RuleScope,
 } from "./matchers.ts";
 import { resolveProjectPath, type ProjectIdentity } from "./project.ts";
-import { tokenizeSingleCommand } from "./policy/bash.ts";
-import { evaluatePolicy, type BashExecutionGuard } from "./policy/engine.ts";
+import { formatConservativeBashCommand, parseConservativeBash, tokenizeSingleCommand } from "./policy/bash.ts";
+import { evaluatePolicy } from "./policy/engine.ts";
 import type { AutoApprovalConfigStore } from "./config/store.ts";
 import { confirmToolCall } from "./approval/confirmation.ts";
 import type { AutomatedReviewer } from "./review/reviewer.ts";
+import type { ReviewRuleSuggestion } from "./review/schema.ts";
 import type { ReviewToolMetadata } from "./review/context.ts";
 import { createFrictionRecord } from "./friction/summary.ts";
 import { runWithAsyncLoader } from "./ui/async-loader.ts";
@@ -36,9 +39,9 @@ function noticeText(value: string): string {
   return compact.length <= REVIEW_NOTICE_LIMIT ? compact : `${compact.slice(0, REVIEW_NOTICE_LIMIT - 1)}…`;
 }
 
-function notifyReviewDecision(ctx: ExtensionContext, call: ToolCall, decision: "approve" | "deny" | "ask_user", reason: string): void {
+function notifyReviewDecision(ctx: ExtensionContext, call: ToolCall, decision: ReviewDecision, reason: string): void {
   if (!ctx.hasUI) return;
-  const level = decision === "approve" ? "info" : decision === "deny" ? "error" : "warning";
+  const level = decision === "allow" ? "info" : decision === "deny" ? "error" : "warning";
   ctx.ui.notify(`Auto Review ${decision.toUpperCase()} · ${noticeText(call.name)}: ${noticeText(reason)}`, level);
 }
 
@@ -48,13 +51,12 @@ export type DecisionDependencies = {
   reviewerUnavailableReason?: string;
   project: ProjectIdentity;
   toolSource?: ToolSourceIdentity;
-  bash?: BashExecutionGuard;
   messages: readonly unknown[];
   tool?: ReviewToolMetadata;
   recordFriction?: (record: FrictionRecord) => Promise<void>;
 };
 
-const EMPTY_PROJECT: ProjectConfig = { policyRules: [], approvalRules: [] };
+const EMPTY_PROJECT: ProjectConfig = { rules: [] };
 
 function matcherContext(project: ProjectIdentity, cwd: string, source?: ToolSourceIdentity): MatcherContext {
   return {
@@ -64,40 +66,99 @@ function matcherContext(project: ProjectIdentity, cwd: string, source?: ToolSour
   };
 }
 
-async function chooseProposal(
-  call: ToolCall,
-  proposed: ToolMatcher | undefined,
-  context: MatcherContext,
-  source?: ToolSourceIdentity,
-): Promise<ToolMatcher | undefined> {
-  if (source && !isStandardToolName(call.name)) {
-    const toolWide: ToolMatcher = { tool: call.name, source, input: { kind: "any" } };
-    if (!validateToolMatcher(toolWide)) return toolWide;
-  }
-  if (proposed && await matchesToolCall(proposed, call, context)) return proposed;
-  return exactMatcherFor(call);
+function sourceBoundMatcher(matcher: ToolMatcher, call: ToolCall, source?: ToolSourceIdentity): ToolMatcher {
+  if (!source || isStandardToolName(call.name) || matcher.source) return matcher;
+  return { ...matcher, source: structuredClone(source) };
 }
 
-async function persistApprovalRule(
+function segmentCalls(call: ToolCall): ToolCall[] | undefined {
+  if (call.name !== "bash") return [call];
+  const input = typeof call.input === "object" && call.input !== null && !Array.isArray(call.input)
+    ? call.input as Record<string, unknown>
+    : undefined;
+  if (typeof input?.command !== "string") return undefined;
+  const parsed = parseConservativeBash(input.command);
+  if (!parsed) return undefined;
+  return parsed.commands.map((tokens) => ({
+    ...call,
+    input: {
+      ...input,
+      command: formatConservativeBashCommand(tokens),
+    },
+  }));
+}
+
+async function suggestionMatchesCall(
+  suggestion: ReviewRuleSuggestion,
+  calls: readonly ToolCall[],
+  context: MatcherContext,
+): Promise<boolean> {
+  for (const call of calls) {
+    if (await matchesToolCall(suggestion.matcher, call, { ...context, scope: suggestion.scope })) return true;
+  }
+  return false;
+}
+
+async function chooseProposals(
+  call: ToolCall,
+  suggested: readonly ReviewRuleSuggestion[] | undefined,
+  context: MatcherContext,
+  source?: ToolSourceIdentity,
+): Promise<ReviewRuleSuggestion[]> {
+  const calls = segmentCalls(call) ?? [call];
+  const proposals: ReviewRuleSuggestion[] = [];
+  for (const item of suggested ?? []) {
+    const matcher = sourceBoundMatcher(item.matcher, call, source);
+    const candidate = { matcher, scope: item.scope };
+    if (validateToolMatcher(matcher, { scope: candidate.scope })) continue;
+    if (await suggestionMatchesCall(candidate, calls, context)) proposals.push(candidate);
+  }
+  const covered = new Set<number>();
+  for (let index = 0; index < calls.length; index += 1) {
+    for (const proposal of proposals) {
+      if (await suggestionMatchesCall(proposal, [calls[index]!], context)) {
+        covered.add(index);
+        break;
+      }
+    }
+  }
+  for (let index = 0; index < calls.length; index += 1) {
+    if (covered.has(index)) continue;
+    const matcher = exactMatcherFor(calls[index]!, source && !isStandardToolName(call.name) ? source : undefined);
+    if (matcher) proposals.push({ matcher, scope: "project" });
+  }
+  const unique = new Map<string, ReviewRuleSuggestion>();
+  for (const proposal of proposals) unique.set(`${proposal.scope}:${matcherKey(proposal.matcher)}`, proposal);
+  return [...unique.values()];
+}
+
+function upsertAllowRule(rules: Rule[], matcher: ToolMatcher): void {
+  const existing = rules.find((rule) => matcherKey(rule.matcher) === matcherKey(matcher));
+  if (existing) {
+    existing.action = "allow";
+    existing.matcher = structuredClone(matcher);
+    return;
+  }
+  rules.push({ id: randomUUID(), action: "allow", matcher: structuredClone(matcher) });
+}
+
+async function persistRules(
   ctx: ExtensionContext,
   dependencies: DecisionDependencies,
-  matcher: ToolMatcher,
-  scope: "project" | "global" = "project",
+  rules: readonly ReviewRuleSuggestion[],
 ): Promise<void> {
   try {
     await dependencies.store.update((config) => {
-      const rule = { id: randomUUID(), matcher };
-      if (scope === "global") {
-        if (!isToolWideMatcher(matcher)) throw new Error("Only Tool-wide Approval Rules may use Global Scope");
-        config.globalApprovalRules.push({ ...rule, matcher });
-      } else {
-        const project = (config.projects[dependencies.project.key] ??= { policyRules: [], approvalRules: [] });
-        project.approvalRules.push(rule);
+      for (const candidate of rules) {
+        const target = candidate.scope === "global"
+          ? config.globalRules
+          : (config.projects[dependencies.project.key] ??= { rules: [] }).rules;
+        upsertAllowRule(target, candidate.matcher);
       }
     });
   } catch (error) {
     ctx.ui.notify(
-      `Current Tool Call approved, but the Approval Rule could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+      `Current Tool Call allowed, but its Rule could not be saved: ${error instanceof Error ? error.message : String(error)}`,
       "error",
     );
   }
@@ -113,30 +174,33 @@ async function requestConfirmation(
   call: ToolCall,
   reason: string,
   dependencies: DecisionDependencies,
-  proposed?: ToolMatcher,
+  suggestions?: readonly ReviewRuleSuggestion[],
 ): Promise<ConfirmationOutcome> {
   if (ctx.signal?.aborted) return { decision: { block: true, reason: "Tool approval was cancelled" } };
-  const matchContext = matcherContext(dependencies.project, ctx.cwd, dependencies.toolSource);
-  const proposal = await chooseProposal(call, proposed, matchContext, dependencies.toolSource);
+  const context = matcherContext(dependencies.project, ctx.cwd, dependencies.toolSource);
+  const proposals = await chooseProposals(call, suggestions, context, dependencies.toolSource);
   if (!ctx.hasUI) return { decision: { block: true, reason: `${reason}; no interactive UI is available` } };
-  if (!proposal) {
-    const approved = await ctx.ui.confirm("Tool approval required", `${reason}\n${call.name}: input is not JSON-serializable`);
-    return approved
-      ? { decision: undefined, userChoice: "approve_once" }
+  if (!proposals.length) {
+    const allowed = await ctx.ui.confirm("Tool approval required", `${reason}\n${call.name}: input is not JSON-serializable`);
+    return allowed
+      ? { decision: undefined, userChoice: "allow_once" }
       : { decision: { block: true, reason: `${reason}; denied by user` }, userChoice: "deny" };
   }
 
   const result = await confirmToolCall(ctx, {
     call,
     reason,
-    proposal,
+    proposals,
     toolSource: dependencies.toolSource,
-    validateProposal: async (matcher) =>
-      await matchesToolCall(matcher, call, matchContext) ? undefined : "Approval Rule must match the current Tool Call",
+    validateProposal: async (matcher, scope) => {
+      if (validateToolMatcher(matcher, { scope })) return "Rule is not valid";
+      const calls = segmentCalls(call) ?? [call];
+      return await suggestionMatchesCall({ matcher, scope }, calls, context) ? undefined : "Rule must match the current Tool Call";
+    },
   });
-  if (result.kind === "approve_once") return { decision: undefined, userChoice: "approve_once" };
+  if (result.kind === "allow_once") return { decision: undefined, userChoice: "allow_once" };
   if (result.kind === "always") {
-    if (result.matcher) await persistApprovalRule(ctx, dependencies, result.matcher, result.scope);
+    if (result.rules?.length) await persistRules(ctx, dependencies, result.rules);
     return { decision: undefined, userChoice: "always" };
   }
   if (result.kind === "cancelled") {
@@ -180,14 +244,13 @@ export async function decideToolCall(
     projectRoot: dependencies.project.root,
     cwd: ctx.cwd,
     project,
-    globalApprovalRules: loaded.config.globalApprovalRules,
+    globalRules: loaded.config.globalRules,
     toolSource: dependencies.toolSource,
-    bash: dependencies.bash,
   });
 
-  if (policy.route === "approve") return undefined;
-  if (policy.route === "deny") return { block: true, reason: policy.reason };
-  if (policy.route === "ask_user") {
+  if (policy.action === "allow") return undefined;
+  if (policy.action === "deny") return { block: true, reason: policy.reason };
+  if (policy.action === "ask") {
     const confirmation = await requestConfirmation(ctx, call, policy.reason, dependencies);
     await recordFriction(dependencies, call, undefined, confirmation.userChoice);
     return confirmation.decision;
@@ -215,16 +278,16 @@ export async function decideToolCall(
     if (outcome.status === "failed") throw outcome.error;
     const review = outcome.value;
     notifyReviewDecision(ctx, call, review.decision, review.reason);
-    if (review.decision === "approve") {
-      await recordFriction(dependencies, call, "approve");
+    if (review.decision === "allow") {
+      await recordFriction(dependencies, call, "allow");
       return undefined;
     }
     if (review.decision === "deny") {
       await recordFriction(dependencies, call, "deny");
       return { block: true, reason: `Automated Review denied the Tool Call: ${review.reason}` };
     }
-    const confirmation = await requestConfirmation(ctx, call, review.reason, dependencies, review.approvalRuleProposal);
-    await recordFriction(dependencies, call, "ask_user", confirmation.userChoice);
+    const confirmation = await requestConfirmation(ctx, call, review.reason, dependencies, review.ruleSuggestions);
+    await recordFriction(dependencies, call, "ask", confirmation.userChoice);
     return confirmation.decision;
   } catch (error) {
     if (ctx.signal?.aborted || (error instanceof Error && error.name === "AbortError")) {

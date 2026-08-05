@@ -1,15 +1,20 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FieldMatcher, JsonValue, ToolMatcher, ToolSourceIdentity } from "../domain.ts";
 import { parseToolMatcher } from "../config/schema.ts";
-import { isJsonValue, isToolWideMatcher, validateToolMatcher } from "../matchers.ts";
+import { isJsonValue, validateToolMatcher, type RuleScope } from "../matchers.ts";
 import { tokenizeSingleCommand } from "../policy/bash.ts";
 import { RuleActionComponent, type RuleAction } from "./rule-action-component.ts";
 
-const STANDARD_TOOLS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
 const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 
-export type RuleScope = "project" | "global";
-export type EditedApprovalRule = { matcher: ToolMatcher; scope: RuleScope };
+export type { RuleScope } from "../matchers.ts";
+export type EditedRuleMatcher = { matcher: ToolMatcher; scope: RuleScope };
+
+function displayToolName(tool: string): string {
+  if (tool === "bash") return "Bash";
+  if (["read", "write", "edit", "grep", "find", "ls"].includes(tool)) return `${tool[0]!.toUpperCase()}${tool.slice(1)}`;
+  return tool.replace(/^([^_]+)_/, "$1:").replaceAll("_", "-");
+}
 
 function valueSummary(value: JsonValue): string {
   if (typeof value === "string") return value.length <= 72 ? JSON.stringify(value) : `${JSON.stringify(value.slice(0, 69))}…`;
@@ -20,27 +25,36 @@ function valueSummary(value: JsonValue): string {
 
 function fieldSummary(field: string, matcher: FieldMatcher): string {
   if (matcher.kind === "exact") return `${field} = ${valueSummary(matcher.value)}`;
-  if (matcher.kind === "tokenPrefix") return `${field} starts with: ${matcher.tokens.join(" ")}`;
-  return `${field} matches: ${matcher.pattern}`;
+  if (matcher.kind === "tokenPrefix") return `${field} starts with ${matcher.tokens.join(" ")} *`;
+  return `${field} matches ${matcher.pattern}`;
 }
 
 export function matcherSummary(matcher: ToolMatcher): string {
-  if (isToolWideMatcher(matcher)) return `${matcher.tool} · All inputs`;
+  const tool = displayToolName(matcher.tool);
+  if (matcher.input.kind === "any") return tool;
   if (matcher.input.kind === "exact") {
     const input = objectInput(matcher.input.value);
+    if (matcher.tool === "bash" && typeof input?.command === "string") return `Bash(${input.command})`;
     const fields = input
-      ? Object.entries(input).slice(0, 4).map(([field, value]) => `${field}: ${valueSummary(value)}`).join("; ")
+      ? Object.entries(input).slice(0, 2).map(([field, value]) => `${field}: ${valueSummary(value)}`).join("; ")
       : valueSummary(matcher.input.value);
-    return `${matcher.tool} · Exact call${fields ? ` · ${fields}` : ""}`;
+    return `${tool}(${fields})`;
   }
-  return `${matcher.tool} · ${Object.entries(matcher.input.fields).map(([field, value]) => fieldSummary(field, value)).join("; ")}`;
+  if (matcher.tool === "bash" && Object.keys(matcher.input.fields).length === 1) {
+    const command = matcher.input.fields.command;
+    if (command?.kind === "tokenPrefix") return `Bash(${command.tokens.join(" ")} *)`;
+  }
+  return `${tool}(${Object.entries(matcher.input.fields).map(([field, value]) => fieldSummary(field, value)).join("; ")})`;
 }
 
 export function matcherDetails(matcher: ToolMatcher, scope: RuleScope = "project"): string {
-  const lines = [`Tool: ${matcher.tool}`, `Scope: ${scope === "global" ? "Global (all projects)" : "Current project"}`];
-  if (isToolWideMatcher(matcher)) {
-    lines.push("Match: All inputs", `Source: ${matcher.source.source} · ${matcher.source.path}`);
-  } else if (matcher.input.kind === "exact") {
+  const lines = [
+    `Tool: ${displayToolName(matcher.tool)}`,
+    `Scope: ${scope === "global" ? "Global (all projects)" : "Current project"}`,
+  ];
+  if (matcher.source) lines.push(`Source: ${matcher.source.source} · ${matcher.source.path}`);
+  if (matcher.input.kind === "any") lines.push("Match: All calls");
+  else if (matcher.input.kind === "exact") {
     lines.push("Match: Exact call");
     if (typeof matcher.input.value === "object" && matcher.input.value !== null && !Array.isArray(matcher.input.value)) {
       for (const [field, value] of Object.entries(matcher.input.value)) lines.push(`  ${field}: ${valueSummary(value)}`);
@@ -55,10 +69,6 @@ export function matcherDetails(matcher: ToolMatcher, scope: RuleScope = "project
 function objectInput(value: unknown): Record<string, JsonValue> | undefined {
   if (!isJsonValue(value) || typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   return value;
-}
-
-function sourceMatches(left: ToolSourceIdentity, right: ToolSourceIdentity): boolean {
-  return left.source === right.source && left.path === right.path;
 }
 
 async function editJsonValue(ctx: ExtensionContext, title: string, initial: JsonValue): Promise<JsonValue | undefined> {
@@ -80,10 +90,10 @@ async function editJsonValue(ctx: ExtensionContext, title: string, initial: Json
 async function editField(ctx: ExtensionContext, tool: string, field: string, initial?: FieldMatcher): Promise<FieldMatcher | undefined> {
   const options = ["Exact value"];
   if (tool === "bash" && field === "command") options.push("Command prefix");
-  if (PATH_TOOLS.has(tool) && field === "path") options.push("Project path pattern");
+  if (PATH_TOOLS.has(tool) && field === "path") options.push("Path pattern");
   const current = initial?.kind === "tokenPrefix"
     ? "Command prefix"
-    : initial?.kind === "pathGlob" ? "Project path pattern" : "Exact value";
+    : initial?.kind === "pathGlob" ? "Path pattern" : "Exact value";
   const selected = await ctx.ui.select(`Constraint: ${field}\nCurrent: ${current}`, options);
   if (!selected) return undefined;
   if (selected === "Command prefix") {
@@ -96,8 +106,8 @@ async function editField(ctx: ExtensionContext, tool: string, field: string, ini
     }
     return { kind: "tokenPrefix", tokens };
   }
-  if (selected === "Project path pattern") {
-    const edited = await ctx.ui.editor("Project-relative path glob", initial?.kind === "pathGlob" ? initial.pattern : "src/**");
+  if (selected === "Path pattern") {
+    const edited = await ctx.ui.editor("Path glob", initial?.kind === "pathGlob" ? initial.pattern : "src/**");
     return edited?.trim() ? { kind: "pathGlob", pattern: edited.trim() } : undefined;
   }
   const value = await editJsonValue(ctx, `Exact value for ${field}`, initial?.kind === "exact" ? initial.value : "");
@@ -105,53 +115,27 @@ async function editField(ctx: ExtensionContext, tool: string, field: string, ini
 }
 
 async function chooseField(ctx: ExtensionContext, matcher: ToolMatcher, exactInput?: unknown): Promise<string | undefined> {
-  const input = !isToolWideMatcher(matcher) && matcher.input.kind === "exact"
-    ? objectInput(matcher.input.value)
-    : objectInput(exactInput);
-  const current = !isToolWideMatcher(matcher) && matcher.input.kind === "fields" ? Object.keys(matcher.input.fields) : [];
+  const input = matcher.input.kind === "exact" ? objectInput(matcher.input.value) : objectInput(exactInput);
+  const current = matcher.input.kind === "fields" ? Object.keys(matcher.input.fields) : [];
   const available = Object.keys(input ?? {}).filter((field) => !current.includes(field));
-  const custom = "Enter another field name";
-  const selected = await ctx.ui.select("Add constraint", [...available, custom, "Cancel"]);
+  const selected = await ctx.ui.select("Add constraint", [...available, "Enter another field name", "Cancel"]);
   if (!selected || selected === "Cancel") return undefined;
-  if (selected !== custom) return selected;
+  if (selected !== "Enter another field name") return selected;
   return (await ctx.ui.input("Field name"))?.trim() || undefined;
 }
 
-async function selectRuleAction(
-  ctx: ExtensionContext,
-  detail: string,
-  allowScope: boolean,
-  scope: RuleScope,
-): Promise<{ action: RuleAction; scope: RuleScope } | undefined> {
-  if (ctx.mode !== "tui") {
-    const actions = ["Change match type", "Edit constraints"];
-    if (allowScope) actions.push(`Scope: ${scope === "global" ? "Global" : "Current project"}`);
-    actions.push("Advanced JSON", "Save rule", "Cancel");
-    const selected = await ctx.ui.select(detail, actions);
-    if (!selected) return undefined;
-    if (selected.startsWith("Scope:")) {
-      return { action: "Scope", scope: scope === "project" ? "global" : "project" };
-    }
-    return { action: selected as RuleAction, scope };
-  }
-
-  return await ctx.ui.custom<{ action: RuleAction; scope: RuleScope }>((tui, theme, _keybindings, done) =>
-    new RuleActionComponent(tui, theme, done, { detail, allowScope, scope }),
-  );
-}
-
 async function editConstraints(ctx: ExtensionContext, matcher: ToolMatcher, exactInput?: unknown): Promise<ToolMatcher> {
-  if (isToolWideMatcher(matcher) || matcher.input.kind !== "fields") return matcher;
+  if (matcher.input.kind !== "fields") return matcher;
   for (;;) {
     const entries = Object.entries(matcher.input.fields);
     const labels = ["Add constraint", ...entries.map(([field, value]) => fieldSummary(field, value)), "Back"];
-    const selected = await ctx.ui.select(`Constraints for ${matcher.tool}`, labels);
+    const selected = await ctx.ui.select(`Constraints for ${displayToolName(matcher.tool)}`, labels);
     if (!selected || selected === "Back") return matcher;
     if (selected === "Add constraint") {
       const field = await chooseField(ctx, matcher, exactInput);
       if (!field) continue;
-      const initialValue = objectInput(exactInput)?.[field];
-      const edited = await editField(ctx, matcher.tool, field, initialValue === undefined ? undefined : { kind: "exact", value: initialValue });
+      const initial = objectInput(exactInput)?.[field];
+      const edited = await editField(ctx, matcher.tool, field, initial === undefined ? undefined : { kind: "exact", value: initial });
       if (edited) matcher.input.fields[field] = edited;
       continue;
     }
@@ -166,80 +150,81 @@ async function editConstraints(ctx: ExtensionContext, matcher: ToolMatcher, exac
   }
 }
 
-export async function editApprovalRule(
+async function selectRuleAction(
+  ctx: ExtensionContext,
+  detail: string,
+  scope: RuleScope,
+): Promise<{ action: RuleAction; scope: RuleScope } | undefined> {
+  if (ctx.mode !== "tui") {
+    const actions = ["Change match type", "Edit constraints", `Scope: ${scope === "global" ? "Global" : "Current project"}`, "Advanced JSON", "Save rule", "Cancel"];
+    const selected = await ctx.ui.select(detail, actions);
+    if (!selected) return undefined;
+    return {
+      action: selected.startsWith("Scope:") ? "Scope" : selected as RuleAction,
+      scope: selected.startsWith("Scope:") ? (scope === "project" ? "global" : "project") : scope,
+    };
+  }
+  return await ctx.ui.custom<{ action: RuleAction; scope: RuleScope }>((tui, theme, _keybindings, done) =>
+    new RuleActionComponent(tui, theme, done, { detail, allowScope: true, scope }),
+  );
+}
+
+export async function editRuleMatcher(
   ctx: ExtensionContext,
   options: {
     initial: ToolMatcher;
     initialScope?: RuleScope;
     toolSource?: ToolSourceIdentity;
     exactInput?: unknown;
-    validate?: (matcher: ToolMatcher) => Promise<string | undefined>;
+    validate?: (matcher: ToolMatcher, scope: RuleScope) => Promise<string | undefined>;
   },
-): Promise<EditedApprovalRule | undefined> {
+): Promise<EditedRuleMatcher | undefined> {
   let matcher = structuredClone(options.initial);
+  if (options.toolSource && !matcher.source) matcher.source = structuredClone(options.toolSource);
   let scope: RuleScope = options.initialScope ?? "project";
   for (;;) {
-    const selected = await selectRuleAction(ctx, matcherDetails(matcher, scope), isToolWideMatcher(matcher), scope);
+    const selected = await selectRuleAction(ctx, matcherDetails(matcher, scope), scope);
     if (!selected || selected.action === "Cancel") return undefined;
-    const action = selected.action;
     scope = selected.scope;
-
-    if (action === "Change match type") {
-      const types = ["Exact call"];
-      if (STANDARD_TOOLS.has(matcher.tool)) types.push("Selected constraints");
-      if (options.toolSource && !STANDARD_TOOLS.has(matcher.tool) && options.toolSource.source !== "builtin") types.push("All inputs");
-      const selected = await ctx.ui.select("Match type", types);
-      if (selected === "Exact call") {
-        const exact = !isToolWideMatcher(matcher) && matcher.input.kind === "exact"
-          ? matcher.input.value
-          : objectInput(options.exactInput);
+    if (selected.action === "Change match type") {
+      const type = await ctx.ui.select("Match type", ["All calls", "Exact call", "Selected constraints"]);
+      const source = matcher.source;
+      if (type === "All calls") matcher = { tool: matcher.tool, ...(source ? { source } : {}), input: { kind: "any" } };
+      else if (type === "Exact call") {
+        const exact = matcher.input.kind === "exact" ? matcher.input.value : objectInput(options.exactInput);
         if (exact === undefined) ctx.ui.notify("No exact input is available", "warning");
-        else {
-          matcher = { tool: matcher.tool, input: { kind: "exact", value: structuredClone(exact) } };
-          scope = "project";
-        }
-      } else if (selected === "Selected constraints") {
-        const exact = !isToolWideMatcher(matcher) && matcher.input.kind === "exact"
-          ? objectInput(matcher.input.value)
-          : objectInput(options.exactInput);
+        else matcher = { tool: matcher.tool, ...(source ? { source } : {}), input: { kind: "exact", value: structuredClone(exact) } };
+      } else if (type === "Selected constraints") {
+        const exact = matcher.input.kind === "exact" ? objectInput(matcher.input.value) : objectInput(options.exactInput);
         matcher = {
           tool: matcher.tool,
-          input: {
-            kind: "fields",
-            fields: Object.fromEntries(Object.entries(exact ?? {}).map(([field, value]) => [field, { kind: "exact", value }])),
-          },
+          ...(source ? { source } : {}),
+          input: { kind: "fields", fields: Object.fromEntries(Object.entries(exact ?? {}).map(([field, value]) => [field, { kind: "exact", value }])) },
         };
-        scope = "project";
-      } else if (selected === "All inputs" && options.toolSource) {
-        matcher = { tool: matcher.tool, source: structuredClone(options.toolSource), input: { kind: "any" } };
       }
-    } else if (action === "Edit constraints") {
-      if (isToolWideMatcher(matcher)) ctx.ui.notify("All inputs has no field constraints", "info");
+    } else if (selected.action === "Edit constraints") {
+      if (matcher.input.kind === "any") ctx.ui.notify("All calls has no constraints", "info");
       else if (matcher.input.kind === "exact") {
         const edited = await editJsonValue(ctx, "Exact Tool input", matcher.input.value);
         if (edited !== undefined) matcher.input.value = edited;
       } else matcher = await editConstraints(ctx, matcher, options.exactInput);
-    } else if (action === "Advanced JSON") {
+    } else if (selected.action === "Advanced JSON") {
       let source = JSON.stringify(matcher, null, 2);
       for (;;) {
         const edited = await ctx.ui.editor("Advanced matcher JSON", source);
         if (edited === undefined) break;
         source = edited;
         try {
-          const parsed = parseToolMatcher(JSON.parse(edited));
+          const parsed = parseToolMatcher(JSON.parse(edited), "matcher", scope);
           if (parsed.tool !== options.initial.tool) throw new Error("Tool name cannot be changed here");
-          if (isToolWideMatcher(parsed) && (!options.toolSource || !sourceMatches(parsed.source, options.toolSource))) {
-            throw new Error("All-input rules must use the current Tool source");
-          }
-          matcher = parsed;
-          if (!isToolWideMatcher(matcher)) scope = "project";
+          matcher = options.toolSource ? { ...parsed, source: structuredClone(options.toolSource) } : parsed;
           break;
         } catch (error) {
           ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
         }
       }
-    } else if (action === "Save rule") {
-      const error = validateToolMatcher(matcher) ?? await options.validate?.(matcher);
+    } else if (selected.action === "Save rule") {
+      const error = validateToolMatcher(matcher, { scope }) ?? await options.validate?.(matcher, scope);
       if (error) ctx.ui.notify(error, "error");
       else return { matcher, scope };
     }

@@ -5,8 +5,10 @@ import { LockedAtomicJsonStore } from "../storage/locked-atomic-json-store.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PROJECT_RECORDS = 50;
-const REVIEW_DECISIONS = new Set<ReviewDecision>(["approve", "deny", "ask_user"]);
-const USER_CHOICES = new Set<UserConfirmationChoice>(["approve_once", "always", "deny", "cancelled"]);
+const REVIEW_DECISIONS = new Set<ReviewDecision>(["allow", "deny", "ask"]);
+const LEGACY_REVIEW_DECISIONS: Record<string, ReviewDecision> = { approve: "allow", ask_user: "ask", deny: "deny" };
+const USER_CHOICES = new Set<UserConfirmationChoice>(["allow_once", "always", "deny", "cancelled"]);
+const LEGACY_USER_CHOICES: Record<string, UserConfirmationChoice> = { approve_once: "allow_once", always: "always", deny: "deny", cancelled: "cancelled" };
 
 function fail(at: string, message: string): never {
   throw new Error(`${at}: ${message}`);
@@ -47,20 +49,22 @@ function parseRecord(value: unknown, at: string): FrictionRecord {
     };
   }
   if (!isJsonValue(input.input)) fail(`${at}.input`, "expected JSON data");
-  if (input.reviewDecision !== undefined && !REVIEW_DECISIONS.has(input.reviewDecision as ReviewDecision)) {
-    fail(`${at}.reviewDecision`, "unknown decision");
-  }
-  if (input.userChoice !== undefined && !USER_CHOICES.has(input.userChoice as UserConfirmationChoice)) {
-    fail(`${at}.userChoice`, "unknown choice");
-  }
-  if (input.reviewDecision === undefined && input.userChoice === undefined) fail(at, "expected reviewDecision or userChoice");
+  const reviewDecision = typeof input.reviewDecision === "string"
+    ? LEGACY_REVIEW_DECISIONS[input.reviewDecision] ?? input.reviewDecision as ReviewDecision
+    : undefined;
+  const userChoice = typeof input.userChoice === "string"
+    ? LEGACY_USER_CHOICES[input.userChoice] ?? input.userChoice as UserConfirmationChoice
+    : undefined;
+  if (reviewDecision !== undefined && !REVIEW_DECISIONS.has(reviewDecision)) fail(`${at}.reviewDecision`, "unknown decision");
+  if (userChoice !== undefined && !USER_CHOICES.has(userChoice)) fail(`${at}.userChoice`, "unknown choice");
+  if (reviewDecision === undefined && userChoice === undefined) fail(at, "expected reviewDecision or userChoice");
   return {
     id: nonEmptyString(input.id, `${at}.id`),
     timestamp,
     tool: { name: nonEmptyString(tool.name, `${at}.tool.name`), ...(source ? { source } : {}) },
     input: structuredClone(input.input),
-    ...(input.reviewDecision ? { reviewDecision: input.reviewDecision as ReviewDecision } : {}),
-    ...(input.userChoice ? { userChoice: input.userChoice as UserConfirmationChoice } : {}),
+    ...(reviewDecision ? { reviewDecision } : {}),
+    ...(userChoice ? { userChoice } : {}),
   };
 }
 

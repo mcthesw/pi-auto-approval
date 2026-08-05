@@ -4,7 +4,6 @@ import { AutoApprovalConfigStore, autoApprovalConfigFile } from "./src/config/st
 import { decideToolCall } from "./src/decision.ts";
 import type { ToolCall } from "./src/domain.ts";
 import { resolveProjectIdentity, type ProjectIdentity } from "./src/project.ts";
-import { inspectBashEnvironment } from "./src/adapters/bash-environment.ts";
 import { AutomatedReviewer, PiReviewSessionFactory } from "./src/review/reviewer.ts";
 import type { ReviewToolMetadata } from "./src/review/context.ts";
 import { openAutoApprovalSettings } from "./src/ui/settings.ts";
@@ -124,9 +123,6 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
       const project = await projectIdentity(pi, ctx.cwd);
       const tool = pi.getAllTools().find((candidate) => candidate.name === call.name);
       const activeReviewer = await initializeReviewer();
-      const bash = call.name === "bash"
-        ? await inspectBashEnvironment(pi, ctx.cwd, agentDir, project)
-        : undefined;
       const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
       return await decideToolCall(ctx, call, {
         store,
@@ -134,7 +130,6 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
         reviewerUnavailableReason: reviewerInitializationError,
         project,
         toolSource: toolSourceIdentity(tool),
-        bash,
         messages,
         tool: reviewMetadata(tool),
         recordFriction: async (record) => {

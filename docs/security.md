@@ -1,74 +1,61 @@
 # Security model
 
-Pi Auto Approval is an authorization layer for Pi Tool Calls. It is not a sandbox and does not certify that an approved call is safe, correct, or aligned with the user's intent.
+Pi Auto Approval is an authorization layer for Pi Tool Calls. It is not a sandbox and does not certify that an allowed call is safe, correct, or aligned with the user's intent.
 
 ## Trust boundary
 
-The trusted computing base includes:
+The trusted computing base includes Pi, the host Node.js process, this and every installed extension, configured model providers and credentials, the user's Pi settings and Auto Approval configuration, and the operating-system environment.
 
-- Pi and the host Node.js process;
-- this extension and all other installed Pi extensions;
-- configured model providers and credentials;
-- the user's global Pi settings and Auto Approval configuration;
-- system executables and the operating-system environment outside the project.
+Pi extensions run with the user's system permissions. Another extension can make side effects without emitting a Tool Call, or alter behavior after this extension allows one. Install only extensions you trust.
 
-Pi extensions execute arbitrary code with the user's system permissions. Another extension can perform side effects without emitting a Tool Call, or can alter behavior after this extension has approved a call. Install only trusted extensions.
+The `tool_call` hook is a pre-execution authorization point, not an operating-system boundary. There is no filesystem, process, or network sandbox behind an Allow decision.
 
-The `tool_call` hook is a pre-execution decision point, not an operating-system security boundary. There is no filesystem, process, or network sandbox behind an Approval.
+## Rules and precedence
 
-## Authorization precedence
+Every persisted Rule has one matcher, one action (`allow`, `ask`, or `deny`), and Project or Global Scope.
 
-A user-accepted project Approval Rule is authoritative for every matching Tool Call. It runs before Policy Rules and built-in defaults. Broad rules can therefore approve broad effects; the user owns the scope they accept.
+1. Matching Project Rules decide first.
+2. If none match, matching Global Rules decide.
+3. Minimal built-in defaults decide ordinary project-local file operations.
+4. Residual calls go to the isolated Reviewer.
 
-Policy Rules are ordered and first-match-wins. They can narrow built-in defaults by routing selected calls to `deny`, `ask_user`, or `auto_review`, or widen them with `approve`. A project Policy Rule also takes precedence over a Global Approval Rule.
+Within one scope, all matching Rules are considered; `deny > ask > allow`. This intentionally lets a user add a narrow restriction without reordering an approval list. Identical matchers are unique within a scope.
 
-Global Approval Rules are restricted to all inputs of one non-standard Tool identified by both its name and Pi source identity. They cannot authorize standard `bash`, `read`, `write`, `edit`, `grep`, `find`, or `ls` tools, commands, paths, or arbitrary field patterns across projects. A same-name Tool from another source does not inherit the rule.
+Users can deliberately create broad Global Rules. This is explicit authorization, not a safety guarantee. New Rules for non-standard tools bind reliable Pi source identity automatically when available, preventing a same-name replacement from silently inheriting the Rule. Existing version 1 exact rules without a source retain their original name-based behavior after migration.
 
-Configuration is never loaded from the repository being authorized. An invalid configuration file does not fall back to permissive defaults.
+Configuration is never loaded from the project being authorized. An invalid configuration does not fall back to permissive defaults.
 
-## Filesystem boundary
+## Paths and Bash
 
-Project-relative path rules use a canonical Git root, or canonical cwd outside Git. Existing symlinks and junctions are resolved. For a path that does not exist, the nearest existing ancestor is resolved before the remaining suffix is checked.
+Project path matching starts from a canonical Git root, or canonical cwd outside Git. Existing symlinks and junctions are resolved; for a non-existing target, the nearest existing ancestor is resolved before its remaining suffix is checked. This reduces common path-escape mistakes but cannot eliminate time-of-check/time-of-use races.
 
-This reduces common path-escape mistakes but cannot eliminate time-of-check/time-of-use races. A path or ancestor can change between authorization and tool execution. Control Paths receive more conservative built-in handling, but an explicit Approval Rule can still authorize them.
+Project path globs are relative to that root. Global path globs must be absolute or home-anchored and compare against the canonical target path. `.git`, `.pi`, `.agents`, and `AGENTS.md` use more conservative built-in defaults, but an explicit Rule can still authorize them. `.env` is not guessed as sensitive; add an Ask or Deny Rule when a project needs that handling.
 
-Sensitive filenames such as `.env` are not guessed by default. Configure a higher-priority Policy Rule when a project requires them to be denied, confirmed, or reviewed.
+Bash has no hidden command allowlist. Pi Auto Approval only conservatively tokenizes syntax with visible execution structure in order to apply explicit Rules segment by segment. Unsupported syntax, expansions, globs, redirections, assignments, and an unresolved segment go to the Reviewer unless a whole-call Exact or explicit all-input Rule matches the original call.
 
-## Bash boundary
-
-Deterministic Bash approval is deliberately narrow. The classifier rejects unsupported syntax, substitutions, expansions, redirections, background execution, environment assignments, unknown wrappers, unsafe options, and unresolved executables. Git approval is limited to a small metadata-only subset of `log`, `rev-parse`, and `branch --show-current`; diff-producing operations and other Git commands still require review because repository/configuration helpers can execute programs. The `file` command is never deterministically approved because option combinations can write magic data.
-
-Before deterministic approval, the extension also rejects relevant startup/configuration environment variables, project-local `PATH` entries, Pi `shellCommandPrefix`, and custom `shellPath`. External command resolution is checked with a clean non-interactive Bash lookup and must not resolve inside the project.
-
-These checks are best-effort hardening, not process isolation. Shell parsing and executable behavior vary across platforms and versions. Calls that cannot be proven to fit the supported subset route to Automated Review; model approval still does not create an OS sandbox.
-
-## Automated Review boundary
+## Reviewer
 
 The Reviewer receives untrusted evidence, not instructions:
 
 - exact current Tool Call JSON, subject to a hard size limit;
-- bounded transcript excerpts;
-- cwd and project root;
+- bounded transcript excerpts and recent user intent;
+- explicit cwd and project root;
 - limited metadata for the current tool.
 
-Every review uses a fresh in-memory session with no tools or project resources. Its operational cwd is the filesystem root because Pi appends that value to custom system prompts; the real project cwd is supplied only as untrusted evidence. Reviewer conversation state is not reused. The fixed policy cannot be replaced through project content or configuration.
+Every review creates a fresh in-memory session with no tools or project resources. Its operational cwd is the filesystem root because Pi appends session cwd to custom system prompts; the actual project cwd is supplied only as marked untrusted evidence. The Reviewer can allow a one-time project-external read or write when user intent is clear. It can also be wrong; that is why it does not create an OS boundary.
 
-Model judgment can be wrong. A Reviewer Approval permits only the current Tool Call. A proposed persistent matcher remains inactive until the user accepts it in User Confirmation.
+Malformed output, missing configuration, timeouts, runtime failure, or oversized Tool Calls ask with UI and deny without it. Caller cancellation denies without another prompt. An invalid Rule suggestion is discarded independently of an otherwise valid Reviewer decision; confirmation falls back to a Project Exact Rule.
 
-Dynamic providers registered by other extensions are not available to the isolated Reviewer runtime in the initial release. Built-in providers and providers configured through Pi's model configuration are supported.
+## Advisor and history
 
-## Friction History boundary
+The Rule Advisor is manually invoked. It receives bounded, lossy Friction History and returns inactive Rule Suggestions. Suggestions never change authorization until the user actively selects and saves them.
 
-Rule Advisor evidence is stored separately in `~/.pi/agent/auto-approval-friction.json`. Each project retains at most 50 records from the last seven days. Records contain the Tool name, source identity when available, Automated Review decision, resulting user choice, and a lossy JSON summary of the Tool input; they do not contain Tool Results or a conversation transcript.
-
-Before persistence, strings are limited to 256 characters, arrays to 10 items, and nesting to six levels. A complete summarized record larger than 4 KiB is skipped. History corruption or write failure disables that advisory evidence but never changes the current authorization decision.
+History lives separately in `~/.pi/agent/auto-approval-friction.json`. Each project retains at most 50 records from seven days. Records include Tool name, source identity when available, Reviewer decision, user choice, and a bounded input summary; they never retain Tool Results or the main conversation transcript. Corrupt or unavailable history disables only Advisor evidence, not the current authorization decision.
 
 ## Failure behavior
 
 - Invalid configuration: User Confirmation with UI, denial without UI.
 - Missing or unavailable Reviewer: User Confirmation with UI, denial without UI.
-- Timeout, malformed response, or oversized Tool Call: User Confirmation with UI, denial without UI.
-- Caller cancellation: denial without opening another prompt.
-- Failed persistent-rule write after explicit approval: the current call remains approved, but the UI reports that the future rule was not saved.
+- Failed persistent Rule write after explicit approval: the current call remains allowed and the UI reports the save failure.
 
-No hidden circuit breaker overrides an accepted Approval Rule.
+No hidden circuit breaker overrides an explicitly accepted Rule.

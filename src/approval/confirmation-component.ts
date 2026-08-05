@@ -2,7 +2,7 @@ import { Input, Key, matchesKey, truncateToWidth, type Component, type TUI } fro
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type ConfirmationResult =
-  | { kind: "approve_once" }
+  | { kind: "allow_once" }
   | { kind: "always" }
   | { kind: "deny"; feedback?: string }
   | { kind: "cancelled" };
@@ -60,7 +60,7 @@ export class ApprovalConfirmationComponent implements Component {
       return;
     }
     if (matchesKey(data, Key.enter)) {
-      if (this.selected === 0) this.done({ kind: "approve_once" });
+      if (this.selected === 0) this.done({ kind: "allow_once" });
       else if (this.selected === 1) this.done({ kind: "always" });
       else {
         const feedback = this.feedbackInput.getValue().trim();
@@ -84,8 +84,8 @@ export class ApprovalConfirmationComponent implements Component {
       this.theme.bold(truncateToWidth(this.options.title, width)),
       this.theme.fg("muted", truncateToWidth(this.options.detail, width)),
       "",
-      line(0, "Approve once"),
-      line(1, "Always approve with rule"),
+      line(0, "Allow once"),
+      line(1, "Always allow with Rule"),
       this.theme.fg("muted", truncateToWidth(`    ${this.options.matcherSummary}`, width)),
       line(2, "Deny (optional feedback):"),
       ...this.feedbackInput.render(nestedWidth).map((value) => `    ${value}`),

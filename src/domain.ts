@@ -9,7 +9,7 @@ export type ToolCall = {
   input: unknown;
 };
 
-export type DecisionRoute = "approve" | "deny" | "ask_user" | "auto_review";
+export type RuleAction = "allow" | "ask" | "deny";
 
 export type ExactInputMatcher = {
   kind: "exact";
@@ -26,35 +26,17 @@ export type ToolSourceIdentity = {
   path: string;
 };
 
-export type SpecificToolMatcher = {
+export type ToolMatcher = {
   tool: string;
-  input: ExactInputMatcher | { kind: "fields"; fields: Record<string, FieldMatcher> };
+  /** New external-tool rules use this automatically when Pi provides sourceInfo. */
+  source?: ToolSourceIdentity;
+  input: ExactInputMatcher | { kind: "any" } | { kind: "fields"; fields: Record<string, FieldMatcher> };
 };
 
-export type ToolWideMatcher = {
-  tool: string;
-  source: ToolSourceIdentity;
-  input: { kind: "any" };
-};
-
-export type ToolMatcher = SpecificToolMatcher | ToolWideMatcher;
-
-export type ApprovalRuleScope = "project" | "global";
-
-export type ApprovalRule = {
+export type Rule = {
   id: string;
+  action: RuleAction;
   matcher: ToolMatcher;
-};
-
-export type GlobalApprovalRule = {
-  id: string;
-  matcher: ToolWideMatcher;
-};
-
-export type PolicyRule = {
-  id: string;
-  matcher: SpecificToolMatcher;
-  route: DecisionRoute;
 };
 
 export type ReviewerConfig = {
@@ -64,19 +46,18 @@ export type ReviewerConfig = {
 };
 
 export type ProjectConfig = {
-  policyRules: PolicyRule[];
-  approvalRules: ApprovalRule[];
+  rules: Rule[];
 };
 
 export type AutoApprovalConfig = {
-  version: 1;
+  version: 2;
   reviewer?: ReviewerConfig;
-  globalApprovalRules: GlobalApprovalRule[];
+  globalRules: Rule[];
   projects: Record<string, ProjectConfig>;
 };
 
-export type ReviewDecision = "approve" | "deny" | "ask_user";
-export type UserConfirmationChoice = "approve_once" | "always" | "deny" | "cancelled";
+export type ReviewDecision = RuleAction;
+export type UserConfirmationChoice = "allow_once" | "always" | "deny" | "cancelled";
 
 export type FrictionRecord = {
   id: string;
@@ -95,11 +76,8 @@ export type FrictionHistory = {
   projects: Record<string, FrictionRecord[]>;
 };
 
-export const EMPTY_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({
-  policyRules: [],
-  approvalRules: [],
-});
+export const EMPTY_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({ rules: [] });
 
 export function defaultAutoApprovalConfig(): AutoApprovalConfig {
-  return { version: 1, globalApprovalRules: [], projects: {} };
+  return { version: 2, globalRules: [], projects: {} };
 }

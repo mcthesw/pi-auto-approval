@@ -1,23 +1,25 @@
 import path from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
-  ApprovalRule,
   AutoApprovalConfig,
-  DecisionRoute,
   FieldMatcher,
-  GlobalApprovalRule,
-  PolicyRule,
+  JsonValue,
   ProjectConfig,
   ReviewerConfig,
-  SpecificToolMatcher,
+  Rule,
+  RuleAction,
   ToolMatcher,
   ToolSourceIdentity,
-  ToolWideMatcher,
 } from "../domain.ts";
-import { isJsonValue, isToolWideMatcher, validateToolMatcher } from "../matchers.ts";
+import { isJsonValue, isToolWideMatcher, matcherKey, validateToolMatcher, type RuleScope } from "../matchers.ts";
 
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
-const ROUTES = new Set<DecisionRoute>(["approve", "deny", "ask_user", "auto_review"]);
+const ACTIONS = new Set<RuleAction>(["allow", "ask", "deny"]);
+const LEGACY_ROUTES = new Map<string, RuleAction>([
+  ["approve", "allow"],
+  ["ask_user", "ask"],
+  ["deny", "deny"],
+]);
 
 export class ConfigValidationError extends Error {
   constructor(message: string) {
@@ -26,8 +28,8 @@ export class ConfigValidationError extends Error {
   }
 }
 
-function fail(path: string, message: string): never {
-  throw new ConfigValidationError(`${path}: ${message}`);
+function fail(at: string, message: string): never {
+  throw new ConfigValidationError(`${at}: ${message}`);
 }
 
 function record(value: unknown, at: string): Record<string, unknown> {
@@ -78,31 +80,27 @@ function parseToolSourceIdentity(value: unknown, at: string): ToolSourceIdentity
   };
 }
 
-export function parseToolMatcher(value: unknown, at = "matcher"): ToolMatcher {
+export function parseToolMatcher(value: unknown, at = "matcher", scope: RuleScope = "project"): ToolMatcher {
   const input = record(value, at);
+  exactKeys(input, ["tool", "source", "input"], at);
   const tool = nonEmptyString(input.tool, `${at}.tool`);
+  const source = input.source === undefined ? undefined : parseToolSourceIdentity(input.source, `${at}.source`);
   const inputMatcher = record(input.input, `${at}.input`);
 
   let matcher: ToolMatcher;
   if (inputMatcher.kind === "any") {
-    exactKeys(input, ["tool", "source", "input"], at);
     exactKeys(inputMatcher, ["kind"], `${at}.input`);
-    matcher = {
-      tool,
-      source: parseToolSourceIdentity(input.source, `${at}.source`),
-      input: { kind: "any" },
-    };
+    matcher = { tool, ...(source ? { source } : {}), input: { kind: "any" } };
   } else if (inputMatcher.kind === "exact") {
-    exactKeys(input, ["tool", "input"], at);
     exactKeys(inputMatcher, ["kind", "value"], `${at}.input`);
     if (!("value" in inputMatcher) || !isJsonValue(inputMatcher.value)) fail(`${at}.input.value`, "expected JSON data");
-    matcher = { tool, input: { kind: "exact", value: structuredClone(inputMatcher.value) } };
+    matcher = { tool, ...(source ? { source } : {}), input: { kind: "exact", value: structuredClone(inputMatcher.value) } };
   } else if (inputMatcher.kind === "fields") {
-    exactKeys(input, ["tool", "input"], at);
     exactKeys(inputMatcher, ["kind", "fields"], `${at}.input`);
     const fields = record(inputMatcher.fields, `${at}.input.fields`);
     matcher = {
       tool,
+      ...(source ? { source } : {}),
       input: {
         kind: "fields",
         fields: Object.fromEntries(
@@ -114,56 +112,43 @@ export function parseToolMatcher(value: unknown, at = "matcher"): ToolMatcher {
     fail(`${at}.input.kind`, "expected any, exact, or fields");
   }
 
-  const matcherError = validateToolMatcher(matcher);
+  const matcherError = validateToolMatcher(matcher, { scope });
   if (matcherError) fail(at, matcherError);
   return matcher;
 }
 
-function parseSpecificToolMatcher(value: unknown, at: string): SpecificToolMatcher {
-  const matcher = parseToolMatcher(value, at);
-  if (isToolWideMatcher(matcher)) fail(at, "tool-wide matcher is only valid for Approval Rules");
-  return matcher;
-}
-
-function parseToolWideMatcher(value: unknown, at: string): ToolWideMatcher {
-  const matcher = parseToolMatcher(value, at);
-  if (!isToolWideMatcher(matcher)) fail(at, "global Approval Rules must be tool-wide");
-  return matcher;
-}
-
-export function parseApprovalRule(value: unknown, at = "approvalRule"): ApprovalRule {
+function parseRule(value: unknown, at: string, scope: RuleScope): Rule {
   const input = record(value, at);
-  exactKeys(input, ["id", "matcher"], at);
-  return { id: nonEmptyString(input.id, `${at}.id`), matcher: parseToolMatcher(input.matcher, `${at}.matcher`) };
-}
-
-function parseGlobalApprovalRule(value: unknown, at: string): GlobalApprovalRule {
-  const input = record(value, at);
-  exactKeys(input, ["id", "matcher"], at);
-  return { id: nonEmptyString(input.id, `${at}.id`), matcher: parseToolWideMatcher(input.matcher, `${at}.matcher`) };
-}
-
-export function parsePolicyRule(value: unknown, at = "policyRule"): PolicyRule {
-  const input = record(value, at);
-  exactKeys(input, ["id", "matcher", "route"], at);
-  if (!ROUTES.has(input.route as DecisionRoute)) fail(`${at}.route`, "expected approve, deny, ask_user, or auto_review");
+  exactKeys(input, ["id", "action", "matcher"], at);
+  if (!ACTIONS.has(input.action as RuleAction)) fail(`${at}.action`, "expected allow, ask, or deny");
   return {
     id: nonEmptyString(input.id, `${at}.id`),
-    matcher: parseSpecificToolMatcher(input.matcher, `${at}.matcher`),
-    route: input.route as DecisionRoute,
+    action: input.action as RuleAction,
+    matcher: parseToolMatcher(input.matcher, `${at}.matcher`, scope),
   };
 }
 
-function parseProject(value: unknown, at: string): ProjectConfig {
-  const input = record(value, at);
-  exactKeys(input, ["policyRules", "approvalRules"], at);
-  if (!Array.isArray(input.policyRules)) fail(`${at}.policyRules`, "expected an array");
-  if (!Array.isArray(input.approvalRules)) fail(`${at}.approvalRules`, "expected an array");
-  const policyRules = input.policyRules.map((rule, index) => parsePolicyRule(rule, `${at}.policyRules[${index}]`));
-  const approvalRules = input.approvalRules.map((rule, index) => parseApprovalRule(rule, `${at}.approvalRules[${index}]`));
-  const ids = [...policyRules, ...approvalRules].map((rule) => rule.id);
-  if (new Set(ids).size !== ids.length) fail(at, "rule ids must be unique within a project");
-  return { policyRules, approvalRules };
+function uniqueId(id: string, used: Set<string>): string {
+  if (!used.has(id)) {
+    used.add(id);
+    return id;
+  }
+  let suffix = 2;
+  while (used.has(`${id}-${suffix}`)) suffix += 1;
+  const unique = `${id}-${suffix}`;
+  used.add(unique);
+  return unique;
+}
+
+function deduplicateRules(candidates: Rule[], usedIds: Set<string>): Rule[] {
+  const byMatcher = new Map<string, Rule>();
+  const priority: Record<RuleAction, number> = { allow: 0, ask: 1, deny: 2 };
+  for (const candidate of candidates) {
+    const key = matcherKey(candidate.matcher);
+    const current = byMatcher.get(key);
+    if (!current || priority[candidate.action] > priority[current.action]) byMatcher.set(key, candidate);
+  }
+  return [...byMatcher.values()].map((rule) => ({ ...rule, id: uniqueId(rule.id, usedIds) }));
 }
 
 function parseReviewer(value: unknown, at: string): ReviewerConfig {
@@ -177,18 +162,11 @@ function parseReviewer(value: unknown, at: string): ReviewerConfig {
   };
 }
 
-export function parseAutoApprovalConfig(value: unknown): AutoApprovalConfig {
-  const input = record(value, "config");
-  exactKeys(input, ["version", "reviewer", "globalApprovalRules", "projects"], "config");
-  if (input.version !== 1) fail("config.version", "expected 1");
-  if (input.globalApprovalRules !== undefined && !Array.isArray(input.globalApprovalRules)) {
-    fail("config.globalApprovalRules", "expected an array");
-  }
-  const globalApprovalRules = (input.globalApprovalRules ?? []).map((rule, index) =>
-    parseGlobalApprovalRule(rule, `config.globalApprovalRules[${index}]`));
-  const globalIds = globalApprovalRules.map((rule) => rule.id);
-  if (new Set(globalIds).size !== globalIds.length) fail("config.globalApprovalRules", "rule ids must be unique");
-  const projectsInput = record(input.projects, "config.projects");
+function parseProjects(
+  value: unknown,
+  parseProject: (value: unknown, at: string) => ProjectConfig,
+): Record<string, ProjectConfig> {
+  const projectsInput = record(value, "config.projects");
   const projects: Record<string, ProjectConfig> = {};
   for (const [key, project] of Object.entries(projectsInput)) {
     if (!key.trim()) fail("config.projects", "project key must not be empty");
@@ -200,10 +178,89 @@ export function parseAutoApprovalConfig(value: unknown): AutoApprovalConfig {
       writable: true,
     });
   }
+  return projects;
+}
+
+function parseV2(input: Record<string, unknown>): AutoApprovalConfig {
+  exactKeys(input, ["version", "reviewer", "globalRules", "projects"], "config");
+  if (!Array.isArray(input.globalRules)) fail("config.globalRules", "expected an array");
+  const usedIds = new Set<string>();
+  const globalRules = input.globalRules.map((rule, index) => parseRule(rule, `config.globalRules[${index}]`, "global"));
+  for (const rule of globalRules) {
+    if (usedIds.has(rule.id)) fail("config.globalRules", "rule ids must be globally unique");
+    usedIds.add(rule.id);
+  }
+  const projects = parseProjects(input.projects, (project, at) => {
+    const projectInput = record(project, at);
+    exactKeys(projectInput, ["rules"], at);
+    if (!Array.isArray(projectInput.rules)) fail(`${at}.rules`, "expected an array");
+    const rules = projectInput.rules.map((rule, index) => parseRule(rule, `${at}.rules[${index}]`, "project"));
+    for (const rule of rules) {
+      if (usedIds.has(rule.id)) fail(at, "rule ids must be globally unique");
+      usedIds.add(rule.id);
+    }
+    if (new Set(rules.map((rule) => matcherKey(rule.matcher))).size !== rules.length) fail(at, "rule matchers must be unique within a scope");
+    return { rules };
+  });
+  if (new Set(globalRules.map((rule) => matcherKey(rule.matcher))).size !== globalRules.length) {
+    fail("config.globalRules", "rule matchers must be unique within a scope");
+  }
   return {
-    version: 1,
+    version: 2,
     ...(input.reviewer === undefined ? {} : { reviewer: parseReviewer(input.reviewer, "config.reviewer") }),
-    globalApprovalRules,
+    globalRules,
     projects,
   };
+}
+
+function parseLegacyRule(value: unknown, at: string, action: RuleAction): Rule {
+  const input = record(value, at);
+  exactKeys(input, ["id", "matcher"], at);
+  return { id: nonEmptyString(input.id, `${at}.id`), action, matcher: parseToolMatcher(input.matcher, `${at}.matcher`) };
+}
+
+function migrateV1(input: Record<string, unknown>): AutoApprovalConfig {
+  exactKeys(input, ["version", "reviewer", "globalApprovalRules", "projects"], "config");
+  if (input.globalApprovalRules !== undefined && !Array.isArray(input.globalApprovalRules)) {
+    fail("config.globalApprovalRules", "expected an array");
+  }
+  const usedIds = new Set<string>();
+  const globalCandidates = (input.globalApprovalRules ?? []).map((rule, index) => {
+    const candidate = parseLegacyRule(rule, `config.globalApprovalRules[${index}]`, "allow");
+    if (!isToolWideMatcher(candidate.matcher) || !candidate.matcher.source) {
+      fail(`config.globalApprovalRules[${index}]`, "expected a source-bound tool-wide matcher");
+    }
+    return candidate;
+  });
+  const globalRules = deduplicateRules(globalCandidates, usedIds);
+  const projects = parseProjects(input.projects, (project, at) => {
+    const projectInput = record(project, at);
+    exactKeys(projectInput, ["policyRules", "approvalRules"], at);
+    if (!Array.isArray(projectInput.policyRules) || !Array.isArray(projectInput.approvalRules)) {
+      fail(at, "expected policyRules and approvalRules arrays");
+    }
+    const policies = projectInput.policyRules.flatMap((rule, index) => {
+      const policy = record(rule, `${at}.policyRules[${index}]`);
+      exactKeys(policy, ["id", "matcher", "route"], `${at}.policyRules[${index}]`);
+      if (policy.route === "auto_review") return [];
+      const action = LEGACY_ROUTES.get(policy.route as string);
+      if (!action) fail(`${at}.policyRules[${index}].route`, "expected approve, deny, ask_user, or auto_review");
+      return [parseLegacyRule({ id: policy.id, matcher: policy.matcher }, `${at}.policyRules[${index}]`, action)];
+    });
+    const approvals = projectInput.approvalRules.map((rule, index) => parseLegacyRule(rule, `${at}.approvalRules[${index}]`, "allow"));
+    return { rules: deduplicateRules([...policies, ...approvals], usedIds) };
+  });
+  return {
+    version: 2,
+    ...(input.reviewer === undefined ? {} : { reviewer: parseReviewer(input.reviewer, "config.reviewer") }),
+    globalRules,
+    projects,
+  };
+}
+
+export function parseAutoApprovalConfig(value: unknown): AutoApprovalConfig {
+  const input = record(value, "config");
+  if (input.version === 2) return parseV2(input);
+  if (input.version === 1) return migrateV1(input);
+  return fail("config.version", "expected 1 or 2");
 }

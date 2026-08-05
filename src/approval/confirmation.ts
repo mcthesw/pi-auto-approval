@@ -1,14 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ToolCall, ToolMatcher, ToolSourceIdentity } from "../domain.ts";
+import type { ReviewRuleSuggestion } from "../review/schema.ts";
 import { ApprovalConfirmationComponent, type ConfirmationResult } from "./confirmation-component.ts";
-import { editApprovalRule, matcherSummary, type RuleScope } from "../ui/rule-editor.ts";
+import { isStandardToolName } from "../matchers.ts";
+import { editRuleMatcher, matcherSummary } from "../ui/rule-editor.ts";
 
 export type UserConfirmationRequest = {
   call: ToolCall;
   reason: string;
-  proposal: ToolMatcher;
+  proposals: readonly ReviewRuleSuggestion[];
   toolSource?: ToolSourceIdentity;
-  validateProposal: (matcher: ToolMatcher) => Promise<string | undefined>;
+  validateProposal: (matcher: ToolMatcher, scope: ReviewRuleSuggestion["scope"]) => Promise<string | undefined>;
 };
 
 function previewCall(call: ToolCall): string {
@@ -27,7 +29,7 @@ async function customConfirmation(ctx: ExtensionContext, request: UserConfirmati
     new ApprovalConfirmationComponent(tui, theme, done, {
       title: "Tool approval required",
       detail: `${request.reason} — ${previewCall(request.call)}`,
-      matcherSummary: matcherSummary(request.proposal),
+      matcherSummary: request.proposals.map((proposal) => matcherSummary(proposal.matcher)).join("\n    "),
     }),
   );
   return result ?? { kind: "cancelled" };
@@ -35,12 +37,12 @@ async function customConfirmation(ctx: ExtensionContext, request: UserConfirmati
 
 async function standardConfirmation(ctx: ExtensionContext, request: UserConfirmationRequest): Promise<ConfirmationResult> {
   const selection = await ctx.ui.select(`Tool approval required: ${request.reason}\n${previewCall(request.call)}`, [
-    "Approve once",
-    "Always approve with rule",
+    "Allow once",
+    "Always allow with Rule",
     "Deny",
   ]);
-  if (selection === "Approve once") return { kind: "approve_once" };
-  if (selection === "Always approve with rule") return { kind: "always" };
+  if (selection === "Allow once") return { kind: "allow_once" };
+  if (selection === "Always allow with Rule") return { kind: "always" };
   if (selection === "Deny") {
     const feedback = (await ctx.ui.input("Optional feedback for the Main Agent"))?.trim();
     return { kind: "deny", ...(feedback ? { feedback } : {}) };
@@ -48,20 +50,34 @@ async function standardConfirmation(ctx: ExtensionContext, request: UserConfirma
   return { kind: "cancelled" };
 }
 
+async function editSuggestions(
+  ctx: ExtensionContext,
+  request: UserConfirmationRequest,
+): Promise<ReviewRuleSuggestion[] | undefined> {
+  const edited: ReviewRuleSuggestion[] = [];
+  for (const proposal of request.proposals) {
+    const result = await editRuleMatcher(ctx, {
+      initial: proposal.matcher,
+      initialScope: proposal.scope,
+      toolSource: isStandardToolName(request.call.name) ? undefined : request.toolSource,
+      exactInput: request.call.input,
+      validate: request.validateProposal,
+    });
+    if (!result) return undefined;
+    edited.push(result);
+  }
+  return edited;
+}
+
 export async function confirmToolCall(
   ctx: ExtensionContext,
   request: UserConfirmationRequest,
-): Promise<ConfirmationResult & { matcher?: ToolMatcher; scope?: RuleScope }> {
+): Promise<ConfirmationResult & { rules?: ReviewRuleSuggestion[] }> {
   if (!ctx.hasUI) return { kind: "deny", feedback: "Tool Call requires confirmation but no UI is available" };
   const result = ctx.mode === "tui"
     ? await customConfirmation(ctx, request)
     : await standardConfirmation(ctx, request);
   if (result.kind !== "always") return result;
-  const edited = await editApprovalRule(ctx, {
-    initial: request.proposal,
-    toolSource: request.toolSource,
-    exactInput: request.call.input,
-    validate: request.validateProposal,
-  });
-  return edited ? { kind: "always", matcher: edited.matcher, scope: edited.scope } : { kind: "cancelled" };
+  const rules = await editSuggestions(ctx, request);
+  return rules ? { kind: "always", rules } : { kind: "cancelled" };
 }

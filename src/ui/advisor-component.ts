@@ -53,8 +53,8 @@ export class AdvisorCandidateListComponent implements Component {
 
   render(width: number): string[] {
     const lines = [
-      this.theme.bold(truncateToWidth("Approval Rule Suggestions", width)),
-      this.theme.fg("muted", truncateToWidth("Nothing is selected by default. Review each authorization before saving.", width)),
+      this.theme.bold(truncateToWidth("Rule Suggestions", width)),
+      this.theme.fg("muted", truncateToWidth("Nothing is selected by default. Review each Rule before saving.", width)),
       "",
     ];
     this.items.forEach((item, index) => {
@@ -71,7 +71,7 @@ export class AdvisorCandidateListComponent implements Component {
     });
     lines.push(
       "",
-      this.theme.fg("dim", truncateToWidth("counterevidence = cited ask/deny/cancel records", width)),
+      this.theme.fg("dim", truncateToWidth("counterevidence = cited ask/deny/cancel outcomes", width)),
       this.theme.fg("dim", truncateToWidth("↑/↓ move • Space select • Enter details/edit • S review selected • Esc cancel", width)),
     );
     return lines;
