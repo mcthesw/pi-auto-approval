@@ -19,6 +19,7 @@ export class RuleAdvisor {
   }
 
   async suggest(config: ReviewerConfig, request: AdvisorRequest, signal?: AbortSignal): Promise<AdvisorSuggestion[]> {
+    if (!request.records.length) return [];
     const projectRules = request.config.projects[request.projectKey]?.rules ?? [];
     const parse = (response: string): RuleSuggestion[] => {
       const parsed = parseAdvisorResponseDetailed(response, {

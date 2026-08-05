@@ -92,6 +92,29 @@ test("Advisor ignores malformed matchers and retains valid sibling proposals", (
   assert.equal(suggestions[0].rationale, "Repeated lookup.");
 });
 
+test("Rule Advisor skips the model without Friction Records", async () => {
+  let called = false;
+  const advisor = new RuleAdvisor({
+    completeStructured: async () => {
+      called = true;
+      throw new Error("must not run without evidence");
+    },
+  });
+  const suggestions = await advisor.suggest(
+    { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+    {
+      projectKey: "/project",
+      projectRoot: "/project",
+      records: [],
+      config: { version: 2, globalRules: [], projects: { "/project": { rules: [] } } },
+      tools,
+      skills: [],
+    },
+  );
+  assert.deepEqual(suggestions, []);
+  assert.equal(called, false);
+});
+
 test("Rule Advisor requests correction when every non-empty proposal is invalid", async () => {
   let parseAttempts = 0;
   const reviewer = {
