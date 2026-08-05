@@ -9,9 +9,14 @@ import {
   type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 import type { ReviewerConfig } from "../domain.ts";
-import { prepareReviewContext, type ReviewRequest } from "./context.ts";
-import { buildReviewPrompt, REVIEW_SYSTEM_PROMPT } from "./prompt.ts";
-import { parseReviewResponse, type ReviewResult } from "./schema.ts";
+import { prepareReviewBatchContext, type ReviewBatchRequest, type ReviewRequest } from "./context.ts";
+import { buildReviewBatchPrompt, REVIEW_SYSTEM_PROMPT } from "./prompt.ts";
+import {
+  parseReviewBatchResponse,
+  STRUCTURED_RESPONSE_CORRECTION_PROMPT,
+  type ReviewBatchResult,
+  type ReviewResult,
+} from "./schema.ts";
 
 const DEFAULT_REVIEW_TIMEOUT_MS = 60_000;
 
@@ -237,14 +242,14 @@ export class AutomatedReviewer {
     return this.sessions.availableModels?.() ?? Promise.resolve([]);
   }
 
-  async complete(
+  private async inSession<T>(
     config: ReviewerConfig,
     cwd: string,
     systemPrompt: string,
-    prompt: string,
     operation: string,
+    run: (prompt: (text: string) => Promise<string>) => Promise<T>,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<T> {
     if (signal?.aborted) throw abortError(operation);
     const controller = new AbortController();
     let session: ReviewSession | undefined;
@@ -260,9 +265,7 @@ export class AutomatedReviewer {
       abortPromise ??= session.abort().catch(() => {});
       return abortPromise;
     };
-    const onReviewAbort = () => {
-      void abortSession();
-    };
+    const onReviewAbort = () => { void abortSession(); };
     signal?.addEventListener("abort", onCallerAbort, { once: true });
     controller.signal.addEventListener("abort", onReviewAbort, { once: true });
     const timeout = setTimeout(() => {
@@ -270,12 +273,11 @@ export class AutomatedReviewer {
       controller.abort();
     }, this.timeoutMs);
 
-    try {
-      session = await createSessionWithAbort(this.sessions.create(config, cwd, systemPrompt), controller.signal, operation);
-      await session.prompt(prompt, { expandPromptTemplates: false });
+    const prompt = async (text: string): Promise<string> => {
+      await session!.prompt(text, { expandPromptTemplates: false });
       if (cancelled) throw abortError(operation);
       if (timedOut) throw new ReviewUnavailableError(`${operation} timed out after ${this.timeoutMs} ms`);
-      const outcome = assistantOutcome(session.messages);
+      const outcome = assistantOutcome(session!.messages);
       if (!outcome) throw new ReviewUnavailableError(`${operation} returned no assistant message`);
       if (outcome.stopReason !== "stop") {
         const detail = outcome.errorMessage ? `: ${outcome.errorMessage}` : "";
@@ -283,6 +285,11 @@ export class AutomatedReviewer {
       }
       if (!outcome.text) throw new ReviewUnavailableError(`${operation} returned no assistant text`);
       return outcome.text;
+    };
+
+    try {
+      session = await createSessionWithAbort(this.sessions.create(config, cwd, systemPrompt), controller.signal, operation);
+      return await run(prompt);
     } catch (error) {
       if (cancelled || signal?.aborted) throw abortError(operation);
       if (timedOut) throw new ReviewUnavailableError(`${operation} timed out after ${this.timeoutMs} ms`);
@@ -297,16 +304,59 @@ export class AutomatedReviewer {
     }
   }
 
-  async review(config: ReviewerConfig, request: ReviewRequest, signal?: AbortSignal): Promise<ReviewResult> {
-    const context = prepareReviewContext(request);
-    const response = await this.complete(
+  async complete(
+    config: ReviewerConfig,
+    cwd: string,
+    systemPrompt: string,
+    prompt: string,
+    operation: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return this.inSession(config, cwd, systemPrompt, operation, (send) => send(prompt), signal);
+  }
+
+  async completeStructured<T>(
+    config: ReviewerConfig,
+    cwd: string,
+    systemPrompt: string,
+    prompt: string,
+    operation: string,
+    parse: (response: string) => T,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.inSession(config, cwd, systemPrompt, operation, async (send) => {
+      const initial = await send(prompt);
+      try {
+        return parse(initial);
+      } catch {
+        return parse(await send(STRUCTURED_RESPONSE_CORRECTION_PROMPT));
+      }
+    }, signal);
+  }
+
+  async reviewBatch(config: ReviewerConfig, request: ReviewBatchRequest, signal?: AbortSignal): Promise<ReviewBatchResult> {
+    const context = prepareReviewBatchContext(request);
+    const toolCallIds = request.calls.map((item) => item.toolCall.id);
+    return this.completeStructured(
       config,
       request.cwd,
       REVIEW_SYSTEM_PROMPT,
-      buildReviewPrompt(context),
+      buildReviewBatchPrompt(context),
       "Automated Review",
+      (response) => parseReviewBatchResponse(response, toolCallIds),
       signal,
     );
-    return parseReviewResponse(response);
+  }
+
+  async review(config: ReviewerConfig, request: ReviewRequest, signal?: AbortSignal): Promise<ReviewResult> {
+    const result = await this.reviewBatch(config, {
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      messages: request.messages,
+      calls: [{ toolCall: request.toolCall, tool: request.tool }],
+    }, signal);
+    const review = result.decisions.get(request.toolCall.id);
+    if (!review) throw new ReviewUnavailableError("Reviewer response omitted the Tool Call decision");
+    return review;
   }
 }

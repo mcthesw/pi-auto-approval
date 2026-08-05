@@ -1,7 +1,7 @@
 import type { ReviewerConfig } from "../domain.ts";
 import type { AutomatedReviewer } from "../review/reviewer.ts";
 import { buildAdvisorPrompt, ADVISOR_SYSTEM_PROMPT, type AdvisorRequest } from "./prompt.ts";
-import { parseAdvisorResponse, type RuleSuggestion } from "./schema.ts";
+import { AdvisorResponseError, parseAdvisorResponseDetailed, type RuleSuggestion } from "./schema.ts";
 
 export type AdvisorSuggestion = RuleSuggestion & {
   stats: {
@@ -20,20 +20,27 @@ export class RuleAdvisor {
 
   async suggest(config: ReviewerConfig, request: AdvisorRequest, signal?: AbortSignal): Promise<AdvisorSuggestion[]> {
     const projectRules = request.config.projects[request.projectKey]?.rules ?? [];
-    const response = await this.reviewer.complete(
+    const parse = (response: string): RuleSuggestion[] => {
+      const parsed = parseAdvisorResponseDetailed(response, {
+        records: request.records,
+        tools: request.tools.map((tool) => ({ name: tool.name, ...(tool.source ? { source: tool.source } : {}) })),
+        projectRules,
+        globalRules: request.config.globalRules,
+      });
+      if (parsed.hadProposals && parsed.suggestions.length === 0) {
+        throw new AdvisorResponseError("Rule Advisor proposals were all invalid");
+      }
+      return parsed.suggestions;
+    };
+    const proposals = await this.reviewer.completeStructured(
       config,
       request.projectRoot,
       ADVISOR_SYSTEM_PROMPT,
       buildAdvisorPrompt(request),
       "Rule Advisor",
+      parse,
       signal,
     );
-    const proposals = parseAdvisorResponse(response, {
-      records: request.records,
-      tools: request.tools.map((tool) => ({ name: tool.name, ...(tool.source ? { source: tool.source } : {}) })),
-      projectRules,
-      globalRules: request.config.globalRules,
-    });
     const records = new Map(request.records.map((record) => [record.id, record]));
     return proposals
       .map((proposal) => {

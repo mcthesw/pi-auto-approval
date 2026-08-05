@@ -92,16 +92,48 @@ test("Advisor ignores malformed matchers and retains valid sibling proposals", (
   assert.equal(suggestions[0].rationale, "Repeated lookup.");
 });
 
+test("Rule Advisor requests correction when every non-empty proposal is invalid", async () => {
+  let parseAttempts = 0;
+  const reviewer = {
+    completeStructured: async (...args) => {
+      const parse = args[5];
+      parseAttempts += 1;
+      assert.throws(() => parse(JSON.stringify({ proposals: [{ action: "review" }] })));
+      parseAttempts += 1;
+      return parse(JSON.stringify({ proposals: [{
+        action: "allow",
+        matcher: { tool: "context7_query-docs", input: { kind: "any" } },
+        scope: "global",
+        rationale: "Repeated lookup.",
+        supportingRecordIds: ["record-1"],
+        replacesRuleIds: [],
+      }] }));
+    },
+  };
+  const advisor = new RuleAdvisor(reviewer);
+  const request = {
+    projectKey: "/project",
+    projectRoot: "/project",
+    records,
+    config: { version: 2, globalRules: [], projects: { "/project": { rules: [] } } },
+    tools,
+    skills: [],
+  };
+  const suggestions = await advisor.suggest({ provider: "test", modelId: "reviewer", thinkingLevel: "low" }, request);
+  assert.equal(suggestions.length, 1);
+  assert.equal(parseAttempts, 2);
+});
+
 test("Rule Advisor uses isolated completion and deterministic friction ordering", async () => {
   const reviewer = {
-    complete: async () => JSON.stringify({ proposals: [{
+    completeStructured: async (...args) => args[5](JSON.stringify({ proposals: [{
       action: "allow",
       matcher: { tool: "context7_query-docs", input: { kind: "any" } },
       scope: "global",
       rationale: "Repeated lookup.",
       supportingRecordIds: ["record-1"],
       replacesRuleIds: [],
-    }] }),
+    }] })),
   };
   const advisor = new RuleAdvisor(reviewer);
   const request = {

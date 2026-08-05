@@ -1,6 +1,7 @@
 import type { ToolCall } from "../domain.ts";
 
-const MAX_TOOL_CALL_CHARS = 65_536;
+export const MAX_REVIEW_TOOL_CALL_BYTES = 65_536;
+export const MAX_REVIEW_BATCH_TOOL_CALL_BYTES = 262_144;
 const MAX_USER_EVIDENCE_CHARS = 30_000;
 const MAX_RECENT_EVIDENCE_CHARS = 20_000;
 const MAX_RECENT_USER_INTENT_CHARS = 12_000;
@@ -33,6 +34,15 @@ export type ReviewRequest = {
   tool?: ReviewToolMetadata;
 };
 
+export type ReviewBatchItem = {
+  toolCall: ToolCall;
+  tool?: ReviewToolMetadata;
+};
+
+export type ReviewBatchRequest = Omit<ReviewRequest, "toolCall" | "tool"> & {
+  calls: readonly ReviewBatchItem[];
+};
+
 export type PreparedReviewContext = {
   toolCallJson: string;
   cwd: string;
@@ -41,6 +51,10 @@ export type PreparedReviewContext = {
   conversationSummary: string;
   transcript: string;
   toolMetadata: string;
+};
+
+export type PreparedReviewBatchContext = Omit<PreparedReviewContext, "toolCallJson" | "toolMetadata"> & {
+  toolCallsJson: string;
 };
 
 function truncate(value: string, max: number): string {
@@ -143,20 +157,60 @@ function buildTranscript(messages: readonly unknown[]): string {
     .join("\n\n");
 }
 
-export function prepareReviewContext(request: ReviewRequest): PreparedReviewContext {
-  const toolCallJson = safeJson(request.toolCall);
+function serializeToolCall(toolCall: ToolCall): string {
+  const toolCallJson = safeJson(toolCall);
   if (!toolCallJson) throw new ReviewContextError("Tool Call input is not JSON-serializable");
-  if (toolCallJson.length > MAX_TOOL_CALL_CHARS) {
-    throw new ReviewContextError(`Tool Call exceeds the ${MAX_TOOL_CALL_CHARS}-character review limit`);
+  if (Buffer.byteLength(toolCallJson, "utf8") > MAX_REVIEW_TOOL_CALL_BYTES) {
+    throw new ReviewContextError(`Tool Call exceeds the ${MAX_REVIEW_TOOL_CALL_BYTES}-byte review limit`);
   }
-  const metadata = request.tool ? safeJson(request.tool) ?? "[unserializable metadata]" : "[metadata unavailable]";
+  return toolCallJson;
+}
+
+export function reviewToolCallBytes(toolCall: ToolCall): number {
+  return Buffer.byteLength(serializeToolCall(toolCall), "utf8");
+}
+
+export function reviewToolCallSignature(toolCall: ToolCall): string {
+  return serializeToolCall(toolCall);
+}
+
+function sharedContext(request: Omit<ReviewRequest, "toolCall" | "tool">): Omit<PreparedReviewContext, "toolCallJson" | "toolMetadata"> {
   return {
-    toolCallJson,
     cwd: request.cwd,
     projectRoot: request.projectRoot,
     recentUserIntent: buildRecentUserIntent(request.messages),
     conversationSummary: buildConversationSummary(request.messages),
     transcript: buildTranscript(request.messages),
-    toolMetadata: truncate(metadata, MAX_TOOL_METADATA_CHARS),
+  };
+}
+
+function serializedToolMetadata(tool: ReviewToolMetadata | undefined): string {
+  return tool ? safeJson(tool) ?? "[unserializable metadata]" : "[metadata unavailable]";
+}
+
+export function prepareReviewContext(request: ReviewRequest): PreparedReviewContext {
+  return {
+    toolCallJson: serializeToolCall(request.toolCall),
+    ...sharedContext(request),
+    toolMetadata: truncate(serializedToolMetadata(request.tool), MAX_TOOL_METADATA_CHARS),
+  };
+}
+
+export function prepareReviewBatchContext(request: ReviewBatchRequest): PreparedReviewBatchContext {
+  if (!request.calls.length) throw new ReviewContextError("Review Batch must contain at least one Tool Call");
+  const entries: string[] = [];
+  let totalToolCallBytes = 0;
+  for (const item of request.calls) {
+    const toolCallJson = serializeToolCall(item.toolCall);
+    totalToolCallBytes += Buffer.byteLength(toolCallJson, "utf8");
+    if (totalToolCallBytes > MAX_REVIEW_BATCH_TOOL_CALL_BYTES) {
+      throw new ReviewContextError(`Review Batch exceeds the ${MAX_REVIEW_BATCH_TOOL_CALL_BYTES}-byte Tool Call limit`);
+    }
+    const metadata = truncate(serializedToolMetadata(item.tool), MAX_TOOL_METADATA_CHARS);
+    entries.push(`{"toolCall":${toolCallJson},"toolMetadata":${JSON.stringify(metadata)}}`);
+  }
+  return {
+    toolCallsJson: `[${entries.join(",")}]`,
+    ...sharedContext(request),
   };
 }

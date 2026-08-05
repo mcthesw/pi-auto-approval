@@ -20,6 +20,11 @@ export type RuleSuggestion = {
   replacesRuleIds: string[];
 };
 
+export type AdvisorParseResult = {
+  suggestions: RuleSuggestion[];
+  hadProposals: boolean;
+};
+
 export class AdvisorResponseError extends Error {
   constructor(message: string) {
     super(message);
@@ -58,7 +63,7 @@ function bindKnownSource(matcher: ToolMatcher, tools: readonly AdvisorToolIdenti
   return sources.length === 1 ? { ...matcher, source: structuredClone(sources[0]!) } : matcher;
 }
 
-export function parseAdvisorResponse(
+export function parseAdvisorResponseDetailed(
   source: string,
   context: {
     records: readonly FrictionRecord[];
@@ -66,7 +71,7 @@ export function parseAdvisorResponse(
     projectRules: readonly Rule[];
     globalRules: readonly Rule[];
   },
-): RuleSuggestion[] {
+): AdvisorParseResult {
   const trimmed = source.trim();
   if (!trimmed || trimmed.length > MAX_RESPONSE_CHARS) throw new AdvisorResponseError("Rule Advisor response is empty or too large");
   let value: unknown;
@@ -143,5 +148,17 @@ export function parseAdvisorResponse(
       if (!(error instanceof AdvisorResponseError) && !(error instanceof ConfigValidationError)) throw error;
     }
   }
-  return suggestions;
+  return { suggestions, hadProposals: root.proposals.length > 0 };
+}
+
+export function parseAdvisorResponse(
+  source: string,
+  context: {
+    records: readonly FrictionRecord[];
+    tools: readonly AdvisorToolIdentity[];
+    projectRules: readonly Rule[];
+    globalRules: readonly Rule[];
+  },
+): RuleSuggestion[] {
+  return parseAdvisorResponseDetailed(source, context).suggestions;
 }
