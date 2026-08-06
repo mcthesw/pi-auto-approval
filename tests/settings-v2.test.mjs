@@ -46,6 +46,27 @@ async function openRulesOnce(store, directory, chooseRule, chooseAction, overrid
   await openAutoApprovalSettings({ hasUI: true, mode: "rpc", ui: ui(select, overrides) }, { store, projectKey: directory, tools: [] });
 }
 
+test("top-level Usage display setting persists the selected mode", async () => {
+  await withSettings(async ({ directory, store }) => {
+    let opened = false;
+    const selectedTitles = [];
+    await openAutoApprovalSettings({
+      hasUI: true,
+      mode: "rpc",
+      ui: ui(async (title) => {
+        selectedTitles.push(title);
+        if (title === "Pi Auto Approval") return opened ? undefined : (opened = true, "Usage display: Brief");
+        if (title === "Usage display") return "Detailed";
+        return undefined;
+      }),
+    }, { store, projectKey: directory, tools: [] });
+    const loaded = await store.read();
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) assert.equal(loaded.config.usageDisplay, "detailed");
+    assert.deepEqual(selectedTitles, ["Pi Auto Approval", "Usage display", "Pi Auto Approval"]);
+  });
+});
+
 test("Rules UI updates the selected Rule by ID after another process reorders it", async () => {
   await withSettings(async ({ directory, store }) => {
     const first = { id: "first", action: "allow", matcher: { tool: "read", input: { kind: "any" } } };

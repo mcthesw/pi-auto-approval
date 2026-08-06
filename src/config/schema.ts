@@ -10,11 +10,13 @@ import type {
   RuleAction,
   ToolMatcher,
   ToolSourceIdentity,
+  UsageDisplay,
 } from "../domain.ts";
 import { isJsonValue, isToolWideMatcher, matcherKey, validateToolMatcher, type RuleScope } from "../matchers.ts";
 
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const ACTIONS = new Set<RuleAction>(["allow", "ask", "deny"]);
+const USAGE_DISPLAYS = new Set<UsageDisplay>(["detailed", "brief", "off"]);
 const LEGACY_ROUTES = new Map<string, RuleAction>([
   ["approve", "allow"],
   ["ask_user", "ask"],
@@ -162,6 +164,13 @@ function parseReviewer(value: unknown, at: string): ReviewerConfig {
   };
 }
 
+function parseUsageDisplay(value: unknown, at: string): UsageDisplay {
+  if (!USAGE_DISPLAYS.has(value as UsageDisplay)) {
+    fail(at, "expected detailed, brief, or off");
+  }
+  return value as UsageDisplay;
+}
+
 function parseProjects(
   value: unknown,
   parseProject: (value: unknown, at: string) => ProjectConfig,
@@ -182,7 +191,7 @@ function parseProjects(
 }
 
 function parseV2(input: Record<string, unknown>): AutoApprovalConfig {
-  exactKeys(input, ["version", "reviewer", "globalRules", "projects"], "config");
+  exactKeys(input, ["version", "reviewer", "usageDisplay", "globalRules", "projects"], "config");
   if (!Array.isArray(input.globalRules)) fail("config.globalRules", "expected an array");
   const usedIds = new Set<string>();
   const globalRules = input.globalRules.map((rule, index) => parseRule(rule, `config.globalRules[${index}]`, "global"));
@@ -208,6 +217,7 @@ function parseV2(input: Record<string, unknown>): AutoApprovalConfig {
   return {
     version: 2,
     ...(input.reviewer === undefined ? {} : { reviewer: parseReviewer(input.reviewer, "config.reviewer") }),
+    usageDisplay: input.usageDisplay === undefined ? "brief" : parseUsageDisplay(input.usageDisplay, "config.usageDisplay"),
     globalRules,
     projects,
   };
@@ -253,6 +263,7 @@ function migrateV1(input: Record<string, unknown>): AutoApprovalConfig {
   return {
     version: 2,
     ...(input.reviewer === undefined ? {} : { reviewer: parseReviewer(input.reviewer, "config.reviewer") }),
+    usageDisplay: "brief" as const,
     globalRules,
     projects,
   };

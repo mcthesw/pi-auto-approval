@@ -37,6 +37,15 @@ async function policy(directory, call, projectRules = [], globalRules = []) {
   });
 }
 
+test("usage display defaults to Brief and validates its three modes", () => {
+  const base = { version: 2, globalRules: [], projects: {} };
+  assert.equal(parseAutoApprovalConfig(base).usageDisplay, "brief");
+  for (const value of ["detailed", "brief", "off"]) {
+    assert.equal(parseAutoApprovalConfig({ ...base, usageDisplay: value }).usageDisplay, value);
+  }
+  assert.throws(() => parseAutoApprovalConfig({ ...base, usageDisplay: "invalid" }), /config\.usageDisplay/);
+});
+
 test("v1 configuration migrates to v2 with restricted actions winning duplicate matchers", () => {
   const matcher = { tool: "read", input: { kind: "fields", fields: { path: { kind: "pathGlob", pattern: "src/**" } } } };
   const config = parseAutoApprovalConfig({

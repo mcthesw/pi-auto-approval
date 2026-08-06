@@ -1,4 +1,5 @@
 import type { ReviewerConfig } from "../domain.ts";
+import type { ModelUsageObserver } from "../model-usage.ts";
 import type { AutomatedReviewer } from "../review/reviewer.ts";
 import { buildAdvisorPrompt, ADVISOR_SYSTEM_PROMPT, type AdvisorRequest } from "./prompt.ts";
 import { AdvisorResponseError, parseAdvisorResponseDetailed, type RuleSuggestion } from "./schema.ts";
@@ -18,7 +19,12 @@ export class RuleAdvisor {
     this.reviewer = reviewer;
   }
 
-  async suggest(config: ReviewerConfig, request: AdvisorRequest, signal?: AbortSignal): Promise<AdvisorSuggestion[]> {
+  async suggest(
+    config: ReviewerConfig,
+    request: AdvisorRequest,
+    signal?: AbortSignal,
+    onUsage?: ModelUsageObserver,
+  ): Promise<AdvisorSuggestion[]> {
     if (!request.records.length) return [];
     const projectRules = request.config.projects[request.projectKey]?.rules ?? [];
     const parse = (response: string): RuleSuggestion[] => {
@@ -42,6 +48,7 @@ export class RuleAdvisor {
       "Rule Advisor",
       parse,
       signal,
+      onUsage,
     );
     const records = new Map(request.records.map((record) => [record.id, record]));
     return proposals

@@ -169,6 +169,40 @@ test("Rule Advisor requests correction when every non-empty proposal is invalid"
   assert.equal(parseAttempts, 2);
 });
 
+test("Rule Advisor forwards one-run usage to its caller", async () => {
+  const reviewer = {
+    completeStructured: async (...args) => {
+      args[7]?.({
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 0,
+        totalTokens: 150,
+        cost: 0.002,
+      });
+      return args[5](JSON.stringify({ proposals: [] }));
+    },
+  };
+  const advisor = new RuleAdvisor(reviewer);
+  const usage = [];
+  const suggestions = await advisor.suggest(
+    { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+    {
+      projectKey: "/project",
+      projectRoot: "/project",
+      records,
+      config: { version: 2, globalRules: [], projects: { "/project": { rules: [] } } },
+      tools,
+      skills: [],
+    },
+    undefined,
+    (value) => usage.push(value),
+  );
+  assert.deepEqual(suggestions, []);
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].cost, 0.002);
+});
+
 test("Rule Advisor uses isolated completion and deterministic friction ordering", async () => {
   const reviewer = {
     completeStructured: async (...args) => args[5](JSON.stringify({ proposals: [{

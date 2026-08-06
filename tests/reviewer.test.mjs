@@ -144,6 +144,10 @@ test("Review Batch parser requires every exact ID and discards invalid suggestio
 
 function fakeFactory(responses, options = {}) {
   const values = Array.isArray(responses) ? responses : [responses];
+  const stats = options.stats ?? {
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+  };
   const state = { created: 0, prompted: [], aborted: 0, disposed: 0 };
   return {
     state,
@@ -154,6 +158,7 @@ function fakeFactory(responses, options = {}) {
       const messages = [];
       return {
         messages,
+        getSessionStats: () => stats,
         prompt: (text) => {
           state.prompted.push(text);
           const response = values[Math.min(messages.length, values.length - 1)];
@@ -175,6 +180,37 @@ function fakeFactory(responses, options = {}) {
     },
   };
 }
+
+test("AutomatedReviewer reports one aggregate usage after a correction retry", async () => {
+  const factory = fakeFactory([
+    '{"decisions":[{"toolCallId":"wrong","decision":"allow","reason":"bad"}]}',
+    allowResponse,
+  ], {
+    stats: {
+      tokens: { input: 12_400, output: 324, cacheRead: 8_100, cacheWrite: 0, total: 20_824 },
+      cost: 0.0042,
+    },
+  });
+  const usage = [];
+  const reviewer = new AutomatedReviewer(factory, 1_000);
+  assert.equal((await reviewer.review(reviewerConfig, request, undefined, (value) => usage.push(value))).decision, "allow");
+  assert.deepEqual(usage, [{
+    inputTokens: 12_400,
+    outputTokens: 324,
+    cacheReadTokens: 8_100,
+    cacheWriteTokens: 0,
+    totalTokens: 20_824,
+    cost: 0.0042,
+  }]);
+});
+
+test("AutomatedReviewer keeps usage reporting outside the authorization result", async () => {
+  const factory = fakeFactory(allowResponse, {
+    stats: { tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 }, cost: 0.01 },
+  });
+  const reviewer = new AutomatedReviewer(factory, 1_000);
+  assert.equal((await reviewer.review(reviewerConfig, request, undefined, () => { throw new Error("display failed"); })).decision, "allow");
+});
 
 test("AutomatedReviewer creates and disposes a fresh session for every review", async () => {
   const factory = fakeFactory(allowResponse);
@@ -219,10 +255,16 @@ test("AutomatedReviewer rejects valid-looking partial output from a non-stop res
   assert.equal(factory.state.disposed, 1);
 });
 
-test("AutomatedReviewer aborts on timeout and always disposes the session", async () => {
-  const factory = fakeFactory(allowResponse, { waitForAbort: true });
+test("AutomatedReviewer aborts on timeout, reports started usage, and always disposes the session", async () => {
+  const factory = fakeFactory(allowResponse, {
+    waitForAbort: true,
+    stats: { tokens: { input: 50, output: 5, cacheRead: 0, cacheWrite: 0, total: 55 }, cost: 0.0002 },
+  });
+  const usage = [];
   const reviewer = new AutomatedReviewer(factory, 10);
-  await assert.rejects(reviewer.review(reviewerConfig, request), ReviewUnavailableError);
+  await assert.rejects(reviewer.review(reviewerConfig, request, undefined, (value) => usage.push(value)), ReviewUnavailableError);
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].totalTokens, 55);
   assert.equal(factory.state.aborted, 1);
   assert.equal(factory.state.disposed, 1);
 });

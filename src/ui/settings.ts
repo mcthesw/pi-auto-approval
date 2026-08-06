@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
-import type { AutoApprovalConfig, Rule, RuleAction, ToolMatcher } from "../domain.ts";
+import type { AutoApprovalConfig, Rule, RuleAction, ToolMatcher, UsageDisplay } from "../domain.ts";
 import { defaultAutoApprovalConfig } from "../domain.ts";
 import { parseAutoApprovalConfig } from "../config/schema.ts";
 import type { AutoApprovalConfigStore } from "../config/store.ts";
@@ -18,6 +18,11 @@ import { RuleListComponent, type RuleListResult } from "./rule-list-component.ts
 import { singleLine } from "./text.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const USAGE_DISPLAY_OPTIONS = ["detailed", "brief", "off"] as const;
+
+function usageDisplayLabel(value: UsageDisplay): string {
+  return value === "detailed" ? "Detailed" : value === "off" ? "Off" : "Brief";
+}
 
 type SettingsDependencies = {
   store: AutoApprovalConfigStore;
@@ -108,6 +113,15 @@ async function chooseReviewerModel(ctx: ExtensionContext, models: ReviewerModelO
   });
   const index = Number(selected);
   return Number.isInteger(index) ? models[index] : undefined;
+}
+
+async function manageUsageDisplay(ctx: ExtensionContext, dependencies: SettingsDependencies): Promise<void> {
+  const selected = await ctx.ui.select("Usage display", ["Detailed", "Brief", "Off", "Back"]);
+  if (!selected || selected === "Back") return;
+  const value = selected.toLowerCase() as UsageDisplay;
+  if (USAGE_DISPLAY_OPTIONS.includes(value as (typeof USAGE_DISPLAY_OPTIONS)[number])) {
+    await mutate(ctx, dependencies.store, (next) => { next.usageDisplay = value; });
+  }
 }
 
 async function manageReviewer(ctx: ExtensionContext, dependencies: SettingsDependencies): Promise<void> {
@@ -323,10 +337,16 @@ export async function openAutoApprovalSettings(ctx: ExtensionContext, dependenci
       if (!(await repairConfig(ctx, dependencies.store, loaded.error))) return;
       continue;
     }
-    const selected = await ctx.ui.select("Pi Auto Approval", ["Rules", "Suggestions", "Reviewer"]);
+    const selected = await ctx.ui.select("Pi Auto Approval", [
+      "Rules",
+      "Suggestions",
+      "Reviewer",
+      `Usage display: ${usageDisplayLabel(loaded.config.usageDisplay)}`,
+    ]);
     if (!selected) return;
     if (selected === "Rules") await manageRules(ctx, dependencies);
     else if (selected === "Reviewer") await manageReviewer(ctx, dependencies);
+    else if (selected.startsWith("Usage display:")) await manageUsageDisplay(ctx, dependencies);
     else if (!dependencies.history || !dependencies.projectRoot) ctx.ui.notify("Rule Advisor runtime unavailable", "warning");
     else await openRuleAdvisor(ctx, {
       store: dependencies.store,

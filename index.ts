@@ -13,6 +13,8 @@ import { toolSourceIdentity } from "./src/tool-identity.ts";
 import { FrictionHistoryStore, frictionHistoryFile } from "./src/friction/store.ts";
 import { RuleAdvisor } from "./src/advisor/advisor.ts";
 import type { AdvisorToolMetadata } from "./src/advisor/prompt.ts";
+import { formatModelUsage, type ModelUsage } from "./src/model-usage.ts";
+import { boundedSingleLine } from "./src/ui/text.ts";
 
 const STATUS_KEY = "auto-approval";
 
@@ -67,7 +69,10 @@ function assistantTurnCalls(entries: readonly unknown[], current: ToolCall, tool
   return [{ call: current }];
 }
 
-function reviewSummary(result: { decisions: ReadonlyMap<string, { decision: "allow" | "ask" | "deny" }> }): {
+function reviewSummary(
+  result: { decisions: ReadonlyMap<string, { decision: "allow" | "ask" | "deny" }> },
+  usage?: string,
+): {
   text: string;
   level: "info" | "warning" | "error";
 } {
@@ -75,9 +80,16 @@ function reviewSummary(result: { decisions: ReadonlyMap<string, { decision: "all
   result.decisions.forEach((decision) => { counts[decision.decision] += 1; });
   const total = counts.allow + counts.ask + counts.deny;
   return {
-    text: `Automated Review · ${total} Tool Call${total === 1 ? "" : "s"}: ${counts.allow} Allow · ${counts.ask} Ask · ${counts.deny} Deny`,
+    text: `Automated Review · ${total} Tool Call${total === 1 ? "" : "s"}: ${counts.allow} Allow · ${counts.ask} Ask · ${counts.deny} Deny${usage ? ` · ${usage}` : ""}`,
     level: counts.deny ? "error" : counts.ask ? "warning" : "info",
   };
+}
+
+function reviewFailureSummary(status: "cancelled" | "failed", error: unknown, usage?: string): string {
+  const detail = status === "cancelled"
+    ? "Automated Review cancelled"
+    : `Automated Review failed: ${boundedSingleLine(error instanceof Error ? error.message : String(error))}`;
+  return `${detail}${usage ? ` · ${usage}` : ""}`;
 }
 
 export type AutoApprovalRuntimeOptions = {
@@ -183,15 +195,29 @@ export function createAutoApprovalExtension(options: AutoApprovalRuntimeOptions 
             cwd: ctx.cwd,
             messages,
             run: async (batch) => {
+              let usage: ModelUsage | undefined;
+              const usageDisplay = config.usageDisplay;
               const outcome = await runWithAsyncLoader(
                 ctx,
                 `Automated Review: ${batch.calls.length} Tool Call${batch.calls.length === 1 ? "" : "s"}…`,
-                (batchSignal) => activeReviewer.reviewBatch(config.reviewer!, batch, batchSignal),
+                (batchSignal) => activeReviewer.reviewBatch(
+                  config.reviewer!,
+                  batch,
+                  batchSignal,
+                  (value) => { usage = value; },
+                ),
               );
-              if (outcome.status === "cancelled") throw new DOMException("Automated Review was cancelled", "AbortError");
-              if (outcome.status === "failed") throw outcome.error;
+              const usageText = formatModelUsage(usage, usageDisplay);
+              if (outcome.status === "cancelled") {
+                if (ctx.hasUI) ctx.ui.notify(reviewFailureSummary("cancelled", undefined, usageText), "warning");
+                throw new DOMException("Automated Review was cancelled", "AbortError");
+              }
+              if (outcome.status === "failed") {
+                if (ctx.hasUI) ctx.ui.notify(reviewFailureSummary("failed", outcome.error, usageText), "error");
+                throw outcome.error;
+              }
               if (ctx.hasUI) {
-                const summary = reviewSummary(outcome.value);
+                const summary = reviewSummary(outcome.value, usageText);
                 ctx.ui.notify(summary.text, summary.level);
               }
               return outcome.value;

@@ -7,8 +7,10 @@ import {
   createAgentSession,
   createExtensionRuntime,
   type ResourceLoader,
+  type SessionStats,
 } from "@earendil-works/pi-coding-agent";
 import type { ReviewerConfig } from "../domain.ts";
+import { modelUsageFromStats, type ModelUsageObserver } from "../model-usage.ts";
 import { prepareReviewBatchContext, type ReviewBatchRequest, type ReviewRequest } from "./context.ts";
 import { buildReviewBatchPrompt, REVIEW_SYSTEM_PROMPT } from "./prompt.ts";
 import {
@@ -69,6 +71,7 @@ class InertReviewResourceLoader implements ResourceLoader {
 export type ReviewSession = {
   prompt(text: string, options?: { expandPromptTemplates?: boolean }): Promise<void>;
   readonly messages: readonly unknown[];
+  getSessionStats?(): SessionStats;
   abort(): Promise<void>;
   dispose(): void;
 };
@@ -249,6 +252,7 @@ export class AutomatedReviewer {
     operation: string,
     run: (prompt: (text: string) => Promise<string>) => Promise<T>,
     signal?: AbortSignal,
+    onUsage?: ModelUsageObserver,
   ): Promise<T> {
     if (signal?.aborted) throw abortError(operation);
     const controller = new AbortController();
@@ -256,6 +260,8 @@ export class AutomatedReviewer {
     let abortPromise: Promise<void> | undefined;
     let timedOut = false;
     let cancelled = false;
+    let modelRequestStarted = false;
+    let usageReported = false;
     const onCallerAbort = () => {
       cancelled = true;
       controller.abort();
@@ -273,7 +279,18 @@ export class AutomatedReviewer {
       controller.abort();
     }, this.timeoutMs);
 
+    const reportUsage = (): void => {
+      if (!modelRequestStarted || usageReported || !onUsage || !session?.getSessionStats) return;
+      usageReported = true;
+      try {
+        onUsage(modelUsageFromStats(session.getSessionStats()));
+      } catch {
+        // Usage reporting is an optional UI observer and must not affect authorization.
+      }
+    };
+
     const prompt = async (text: string): Promise<string> => {
+      modelRequestStarted = true;
       await session!.prompt(text, { expandPromptTemplates: false });
       if (cancelled) throw abortError(operation);
       if (timedOut) throw new ReviewUnavailableError(`${operation} timed out after ${this.timeoutMs} ms`);
@@ -300,6 +317,7 @@ export class AutomatedReviewer {
       signal?.removeEventListener("abort", onCallerAbort);
       controller.signal.removeEventListener("abort", onReviewAbort);
       if (controller.signal.aborted) await abortSession();
+      reportUsage();
       session?.dispose();
     }
   }
@@ -311,8 +329,9 @@ export class AutomatedReviewer {
     prompt: string,
     operation: string,
     signal?: AbortSignal,
+    onUsage?: ModelUsageObserver,
   ): Promise<string> {
-    return this.inSession(config, cwd, systemPrompt, operation, (send) => send(prompt), signal);
+    return this.inSession(config, cwd, systemPrompt, operation, (send) => send(prompt), signal, onUsage);
   }
 
   async completeStructured<T>(
@@ -323,6 +342,7 @@ export class AutomatedReviewer {
     operation: string,
     parse: (response: string) => T,
     signal?: AbortSignal,
+    onUsage?: ModelUsageObserver,
   ): Promise<T> {
     return this.inSession(config, cwd, systemPrompt, operation, async (send) => {
       const initial = await send(prompt);
@@ -331,10 +351,15 @@ export class AutomatedReviewer {
       } catch (error) {
         return parse(await send(structuredResponseCorrectionPrompt(error)));
       }
-    }, signal);
+    }, signal, onUsage);
   }
 
-  async reviewBatch(config: ReviewerConfig, request: ReviewBatchRequest, signal?: AbortSignal): Promise<ReviewBatchResult> {
+  async reviewBatch(
+    config: ReviewerConfig,
+    request: ReviewBatchRequest,
+    signal?: AbortSignal,
+    onUsage?: ModelUsageObserver,
+  ): Promise<ReviewBatchResult> {
     const context = prepareReviewBatchContext(request);
     const toolCallIds = request.calls.map((item) => item.toolCall.id);
     return this.completeStructured(
@@ -345,16 +370,22 @@ export class AutomatedReviewer {
       "Automated Review",
       (response) => parseReviewBatchResponse(response, toolCallIds),
       signal,
+      onUsage,
     );
   }
 
-  async review(config: ReviewerConfig, request: ReviewRequest, signal?: AbortSignal): Promise<ReviewResult> {
+  async review(
+    config: ReviewerConfig,
+    request: ReviewRequest,
+    signal?: AbortSignal,
+    onUsage?: ModelUsageObserver,
+  ): Promise<ReviewResult> {
     const result = await this.reviewBatch(config, {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       messages: request.messages,
       calls: [{ toolCall: request.toolCall, tool: request.tool }],
-    }, signal);
+    }, signal, onUsage);
     const review = result.decisions.get(request.toolCall.id);
     if (!review) throw new ReviewUnavailableError("Reviewer response omitted the Tool Call decision");
     return review;

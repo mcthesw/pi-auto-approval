@@ -64,6 +64,14 @@ _Avoid_: One shared authorization decision
 One request within the same isolated model session to repair an invalid structured response without changing the original request or authorization boundary.
 _Avoid_: A new review, a permission retry
 
+**Model Run**:
+One isolated **Reviewer** or **Rule Advisor** operation, including any **Correction Retry** and its combined **Model Usage**.
+_Avoid_: Tool Call, Friction Record, model request
+
+**Model Usage**:
+The reported token consumption and estimated monetary cost attributable to one **Model Run**.
+_Avoid_: Exact bill, Tool Call cost
+
 **Friction Record**:
 A bounded, lossy record of a **Tool Call** that required review or confirmation.
 _Avoid_: Audit log, transcript copy
@@ -75,3 +83,8 @@ _Avoid_: Automatic rule writer
 **Rule Suggestion**:
 A proposed **Rule** that does nothing until the user explicitly selects and saves it.
 _Avoid_: Automatic authorization
+
+## Relationships
+
+- One **Reviewer** Model Run evaluates exactly one **Review Batch**.
+- One **Rule Advisor** Model Run analyzes one or more **Friction Records** and produces zero or more **Rule Suggestions**.

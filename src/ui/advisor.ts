@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FrictionRecord, RuleAction, ToolMatcher } from "../domain.ts";
+import { formatModelUsage, type ModelUsage } from "../model-usage.ts";
 import type { AutoApprovalConfigStore } from "../config/store.ts";
 import type { FrictionHistoryStore } from "../friction/store.ts";
 import type { RuleAdvisor, AdvisorSuggestion } from "../advisor/advisor.ts";
@@ -98,6 +99,7 @@ async function reviewInTui(
   candidates: CandidateState[],
   records: Map<string, FrictionRecord>,
   tools: readonly AdvisorToolMetadata[],
+  usageText?: string,
 ): Promise<boolean> {
   for (;;) {
     const result = await ctx.ui.custom<RuleReviewResult>((tui, theme, _keybindings, done) => new RuleReviewComponent(
@@ -111,7 +113,7 @@ async function reviewInTui(
         warning: hasCounterevidence(candidate.suggestion, records),
       })),
       done,
-      { title: "Rule Suggestions", subtitle: "Nothing is selected by default" },
+      { title: "Rule Suggestions", subtitle: `Nothing is selected by default${usageText ? ` · ${usageText}` : ""}` },
     ));
     if (!result) return false;
     applySelection(candidates, result.selected);
@@ -131,6 +133,7 @@ async function reviewWithMenus(
   candidates: CandidateState[],
   records: Map<string, FrictionRecord>,
   tools: readonly AdvisorToolMetadata[],
+  usageText?: string,
 ): Promise<boolean> {
   for (;;) {
     const labels = [
@@ -138,7 +141,10 @@ async function reviewWithMenus(
       "Save selected",
       "Back",
     ];
-    const selected = await ctx.ui.select("Rule Suggestions (nothing selected by default)", labels);
+    const selected = await ctx.ui.select(
+      `Rule Suggestions (nothing selected by default${usageText ? ` · ${usageText}` : ""})`,
+      labels,
+    );
     if (!selected || selected === "Back") return false;
     if (selected === "Save selected") {
       if (candidates.some((candidate) => candidate.selected)) return true;
@@ -218,6 +224,8 @@ export async function openRuleAdvisor(ctx: ExtensionContext, dependencies: Advis
     ctx.ui.notify(`Rule Advisor history is invalid: ${history.error}`, "error");
     return;
   }
+  let usage: ModelUsage | undefined;
+  const usageDisplay = loaded.config.usageDisplay;
   const outcome = await runWithAsyncLoader(ctx, "Rule Advisor: analyzing approval friction…", (signal) => dependencies.advisor!.suggest(
     loaded.config.reviewer!,
     {
@@ -229,17 +237,19 @@ export async function openRuleAdvisor(ctx: ExtensionContext, dependencies: Advis
       skills: dependencies.skills,
     },
     signal,
+    (value) => { usage = value; },
   ));
+  const usageText = formatModelUsage(usage, usageDisplay);
   if (outcome.status === "cancelled") {
-    ctx.ui.notify("Rule Advisor cancelled", "info");
+    ctx.ui.notify(`Rule Advisor cancelled${usageText ? ` · ${usageText}` : ""}`, "info");
     return;
   }
   if (outcome.status === "failed") {
-    ctx.ui.notify(`Rule Advisor failed: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`, "error");
+    ctx.ui.notify(`Rule Advisor failed: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}${usageText ? ` · ${usageText}` : ""}`, "error");
     return;
   }
   if (!outcome.value.length) {
-    ctx.ui.notify("Rule Advisor found no worthwhile suggestions", "info");
+    ctx.ui.notify(`Rule Advisor found no worthwhile suggestions${usageText ? ` · ${usageText}` : ""}`, "info");
     return;
   }
 
@@ -258,7 +268,7 @@ export async function openRuleAdvisor(ctx: ExtensionContext, dependencies: Advis
     }),
   }));
   const proceed = ctx.mode === "tui"
-    ? await reviewInTui(ctx, candidates, records, dependencies.tools)
-    : await reviewWithMenus(ctx, candidates, records, dependencies.tools);
+    ? await reviewInTui(ctx, candidates, records, dependencies.tools, usageText)
+    : await reviewWithMenus(ctx, candidates, records, dependencies.tools, usageText);
   if (proceed) await persistSelected(ctx, dependencies, candidates);
 }

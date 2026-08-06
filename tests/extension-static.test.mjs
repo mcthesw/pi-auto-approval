@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { createAutoApprovalExtension } from "../index.ts";
 import { autoApprovalConfigFile } from "../src/config/store.ts";
 
-async function withHarness(fn, setup) {
+async function withHarness(fn, setup, harnessOptions = {}) {
   const agentDir = await mkdtemp(path.join(tmpdir(), "pi-auto-extension-"));
   const project = await mkdtemp(path.join(tmpdir(), "pi-auto-project-"));
   try {
@@ -14,6 +14,7 @@ async function withHarness(fn, setup) {
     const handlers = new Map();
     const commands = new Map();
     const statuses = [];
+    const notifications = [];
     let tools = [];
     const pi = {
       on: (event, handler) => handlers.set(event, handler),
@@ -29,25 +30,32 @@ async function withHarness(fn, setup) {
       availability: async () => undefined,
       availableModels: async () => [],
       review: async () => ({ decision: "allow", reason: "safe" }),
-      reviewBatch: async (_config, request) => {
+      usage: undefined,
+      usageReports: 0,
+      reviewBatch: async (_config, request, _signal, onUsage) => {
         reviewer.batches.push(request.calls.map((item) => item.toolCall.id));
+        if (reviewer.usage && onUsage) {
+          reviewer.usageReports += 1;
+          onUsage(reviewer.usage);
+        }
+        if (harnessOptions.reviewBatchError) throw harnessOptions.reviewBatchError;
         return { decisions: new Map(request.calls.map((item) => [item.toolCall.id, { decision: "allow", reason: "safe" }])) };
       },
     };
     createAutoApprovalExtension({ agentDir, createReviewer: async () => reviewer })(pi);
     const ctx = {
       cwd: project,
-      hasUI: false,
-      mode: "print",
+      hasUI: harnessOptions.hasUI ?? false,
+      mode: harnessOptions.mode ?? "print",
       signal: undefined,
       sessionManager: { buildContextEntries: () => [] },
       ui: {
-        notify: () => {},
+        notify: (message, level) => { notifications.push({ message, level }); },
         setStatus: (key, value) => statuses.push({ key, value }),
         confirm: async () => false,
       },
     };
-    await fn({ handlers, commands, ctx, setTools: (value) => { tools = value; }, statuses, reviewer });
+    await fn({ handlers, commands, ctx, setTools: (value) => { tools = value; }, statuses, notifications, reviewer });
   } finally {
     await rm(agentDir, { recursive: true, force: true });
     await rm(project, { recursive: true, force: true });
@@ -117,6 +125,117 @@ test("extension batches Review-Eligible siblings from one assistant message", as
       projects: {},
     }));
   });
+});
+
+test("extension shows one usage notification for a Review Batch", async () => {
+  await withHarness(async ({ handlers, ctx, setTools, reviewer, notifications }) => {
+    setTools([{ name: "todowrite", description: "Todos", parameters: {}, sourceInfo: { source: "sdk", path: "<sdk:todowrite>" } }]);
+    reviewer.usage = {
+      inputTokens: 1_200,
+      outputTokens: 80,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 1_280,
+      cost: 0.0012,
+    };
+    ctx.sessionManager.buildContextEntries = async () => [{
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "one", name: "todowrite", arguments: { todos: [] } },
+          { type: "toolCall", id: "two", name: "todowrite", arguments: { todos: [] } },
+        ],
+      },
+    }];
+    await handlers.get("tool_call")(event("todowrite", { todos: [] }, "one"), ctx);
+    await handlers.get("tool_call")(event("todowrite", { todos: [] }, "two"), ctx);
+    const usageNotices = notifications.filter((item) => item.message.includes("Automated Review") && item.message.includes("est. $0.0012"));
+    assert.equal(usageNotices.length, 1);
+  }, async ({ agentDir }) => {
+    await writeFile(autoApprovalConfigFile(agentDir), JSON.stringify({
+      version: 2,
+      reviewer: { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+      usageDisplay: "brief",
+      globalRules: [],
+      projects: {},
+    }));
+  }, { hasUI: true });
+});
+
+test("extension still samples usage when display is Off without showing it", async () => {
+  await withHarness(async ({ handlers, ctx, setTools, reviewer, notifications }) => {
+    setTools([{ name: "todowrite", description: "Todos", parameters: {}, sourceInfo: { source: "sdk", path: "<sdk:todowrite>" } }]);
+    reviewer.usage = {
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 3,
+      cost: 0.001,
+    };
+    await handlers.get("tool_call")(event("todowrite", { todos: [] }), ctx);
+    assert.equal(reviewer.usageReports, 1);
+    assert.equal(notifications.some((item) => item.message.includes("est.")), false);
+  }, async ({ agentDir }) => {
+    await writeFile(autoApprovalConfigFile(agentDir), JSON.stringify({
+      version: 2,
+      reviewer: { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+      usageDisplay: "off",
+      globalRules: [],
+      projects: {},
+    }));
+  }, { hasUI: true });
+});
+
+test("extension shows started usage on Reviewer failure without putting it in block reason", async () => {
+  await withHarness(async ({ handlers, ctx, setTools, reviewer, notifications }) => {
+    setTools([{ name: "todowrite", description: "Todos", parameters: {}, sourceInfo: { source: "sdk", path: "<sdk:todowrite>" } }]);
+    reviewer.usage = {
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 12,
+      cost: 0.0003,
+    };
+    const result = await handlers.get("tool_call")(event("todowrite", { todos: [] }), ctx);
+    assert.equal(result.block, true);
+    assert.ok(notifications.some((item) => item.message.includes("Automated Review failed") && item.message.includes("est. $0.0003")));
+    assert.doesNotMatch(result.reason, /est\. \$0\.0003/);
+  }, async ({ agentDir }) => {
+    await writeFile(autoApprovalConfigFile(agentDir), JSON.stringify({
+      version: 2,
+      reviewer: { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+      usageDisplay: "brief",
+      globalRules: [],
+      projects: {},
+    }));
+  }, { hasUI: true, reviewBatchError: new Error("provider failed") });
+});
+
+test("extension reports started usage when Reviewer is cancelled", async () => {
+  await withHarness(async ({ handlers, ctx, setTools, reviewer, notifications }) => {
+    setTools([{ name: "todowrite", description: "Todos", parameters: {}, sourceInfo: { source: "sdk", path: "<sdk:todowrite>" } }]);
+    reviewer.usage = {
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 12,
+      cost: 0.0003,
+    };
+    await handlers.get("tool_call")(event("todowrite", { todos: [] }), ctx);
+    assert.ok(notifications.some((item) => item.message.includes("Automated Review cancelled") && item.message.includes("est. $0.0003")));
+  }, async ({ agentDir }) => {
+    await writeFile(autoApprovalConfigFile(agentDir), JSON.stringify({
+      version: 2,
+      reviewer: { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+      usageDisplay: "brief",
+      globalRules: [],
+      projects: {},
+    }));
+  }, { hasUI: true, reviewBatchError: Object.assign(new Error("cancelled"), { name: "AbortError" }) });
 });
 
 test("extension applies standard read policy regardless of tool source", async () => {

@@ -50,7 +50,8 @@ Compound Bash calls are resolved segment by segment. Unresolved or conservativel
 
 - **Rules** — create, edit, or delete Project and Global Rules;
 - **Suggestions** — review Rules proposed from recent approval friction;
-- **Reviewer** — choose the explicit model and thinking level.
+- **Reviewer** — choose the explicit model and thinking level;
+- **Usage display** — choose Detailed token usage, Brief estimated cost, or Off for each Reviewer/Advisor run.
 
 A Tool Call requiring confirmation offers:
 
@@ -80,9 +81,9 @@ Configuration is stored outside repositories:
 
 It is strictly validated, inter-process locked, and atomically written. Invalid configuration never grants permission: interactive sessions ask; non-interactive sessions deny. Version 1 configuration is migrated automatically when read and only version 2 is written.
 
-Every Automated Review uses a fresh in-memory Pi session with no tools, extensions, skills, or persistent history. The real Tool Call, cwd, and bounded conversation context are supplied only as untrusted evidence.
+Every Automated Review uses a fresh in-memory Pi session with no tools, extensions, skills, or persistent history. The real Tool Call, cwd, and bounded conversation context are supplied only as untrusted evidence. Its reported token usage and estimated cost can be shown in the result notification; this usage is not persisted and is not added to Pi's main session totals.
 
-The Rule Advisor runs only when **Suggestions** is opened. It reads at most 50 lossy Friction Records from the last seven days; it stores no Tool Results or conversation transcript.
+The Rule Advisor runs only when **Suggestions** is opened. Its one-run usage can be shown in the Suggestions subtitle or result notification. It reads at most 50 lossy Friction Records from the last seven days; it stores no Tool Results or conversation transcript.
 
 See [`docs/security.md`](docs/security.md) for the trust boundary and [`CONTEXT.md`](CONTEXT.md) for domain terminology.
 

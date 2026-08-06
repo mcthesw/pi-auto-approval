@@ -45,6 +45,8 @@ export type ReviewerConfig = {
   thinkingLevel: ThinkingLevel;
 };
 
+export type UsageDisplay = "detailed" | "brief" | "off";
+
 export type ProjectConfig = {
   rules: Rule[];
 };
@@ -52,6 +54,7 @@ export type ProjectConfig = {
 export type AutoApprovalConfig = {
   version: 2;
   reviewer?: ReviewerConfig;
+  usageDisplay: UsageDisplay;
   globalRules: Rule[];
   projects: Record<string, ProjectConfig>;
 };
@@ -79,5 +82,5 @@ export type FrictionHistory = {
 export const EMPTY_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({ rules: [] });
 
 export function defaultAutoApprovalConfig(): AutoApprovalConfig {
-  return { version: 2, globalRules: [], projects: {} };
+  return { version: 2, usageDisplay: "brief", globalRules: [], projects: {} };
 }

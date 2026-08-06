@@ -31,20 +31,14 @@ import type { ReviewRequest, ReviewToolMetadata } from "./review/context.ts";
 import type { ReviewResult } from "./review/schema.ts";
 import { createFrictionRecord } from "./friction/summary.ts";
 import { runWithAsyncLoader } from "./ui/async-loader.ts";
+import { boundedSingleLine } from "./ui/text.ts";
 
 export type ToolDecision = { block: true; reason: string } | undefined;
-
-const REVIEW_NOTICE_LIMIT = 300;
-
-function noticeText(value: string): string {
-  const compact = value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
-  return compact.length <= REVIEW_NOTICE_LIMIT ? compact : `${compact.slice(0, REVIEW_NOTICE_LIMIT - 1)}…`;
-}
 
 function notifyReviewDecision(ctx: ExtensionContext, call: ToolCall, decision: ReviewDecision, reason: string): void {
   if (!ctx.hasUI) return;
   const level = decision === "allow" ? "info" : decision === "deny" ? "error" : "warning";
-  ctx.ui.notify(`Auto Review ${decision.toUpperCase()} · ${noticeText(call.name)}: ${noticeText(reason)}`, level);
+  ctx.ui.notify(`Auto Review ${decision.toUpperCase()} · ${boundedSingleLine(call.name)}: ${boundedSingleLine(reason)}`, level);
 }
 
 export type DecisionDependencies = {
@@ -282,7 +276,7 @@ export async function decideToolCall(
     const review = dependencies.review
       ? await dependencies.review(loaded.config, request, ctx.signal)
       : await (async () => {
-        const outcome = await runWithAsyncLoader(ctx, `Automated Review: ${noticeText(call.name)}…`, (signal) =>
+        const outcome = await runWithAsyncLoader(ctx, `Automated Review: ${boundedSingleLine(call.name)}…`, (signal) =>
           dependencies.reviewer!.review(loaded.config.reviewer!, request, signal));
         if (outcome.status === "cancelled") throw new DOMException("Automated Review was cancelled", "AbortError");
         if (outcome.status === "failed") throw outcome.error;
