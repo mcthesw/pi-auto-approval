@@ -48,7 +48,7 @@ test("Reviewer allow remains final for project-external Tool Calls", async () =>
 
 test("ask without a usable suggestion falls back to a source-bound Project exact Rule", async () => {
   await withDecision(async ({ directory, store }) => {
-    const select = async (_title, options) => options.includes("Allow with Rule") ? "Allow with Rule" : "Save selected";
+    const select = async (_title, options) => options.includes("Allow and create Rule") ? "Allow and create Rule" : "Save selected";
     const call = { id: "1", name: "context7_query-docs", input: { libraryId: "/vercel/next.js", query: "routing" } };
     const result = await decideToolCall(context(directory, select), call, {
       store,
@@ -71,7 +71,7 @@ test("ask without a usable suggestion falls back to a source-bound Project exact
 
 test("composite Bash suggestions persist a Rule for every uncovered segment", async () => {
   await withDecision(async ({ directory, store }) => {
-    const select = async (_title, options) => options.includes("Allow with Rule") ? "Allow with Rule" : "Save selected";
+    const select = async (_title, options) => options.includes("Allow and create Rule") ? "Allow and create Rule" : "Save selected";
     const call = { id: "1", name: "bash", input: { command: "cargo fmt --all && cargo clippy --workspace" } };
     const result = await decideToolCall(context(directory, select), call, {
       store,
@@ -92,7 +92,7 @@ test("composite Bash suggestions persist a Rule for every uncovered segment", as
   });
 });
 
-test("Allow with Rule previews a matching Rule and keeps its restrictive action", async () => {
+test("Allow and create Rule previews a matching Rule and keeps its restrictive action", async () => {
   await withDecision(async ({ directory, store }) => {
     const call = { id: "1", name: "context7_query-docs", input: { libraryId: "/vercel/next.js", query: "routing" } };
     const matcher = { tool: call.name, input: { kind: "exact", value: call.input } };
@@ -100,7 +100,7 @@ test("Allow with Rule previews a matching Rule and keeps its restrictive action"
       config.projects[directory] = { rules: [{ id: "ask-existing", action: "ask", matcher }] };
     });
     const confirmations = [];
-    const select = async (_title, options) => options.includes("Allow with Rule") ? "Allow with Rule" : "Save selected";
+    const select = async (_title, options) => options.includes("Allow and create Rule") ? "Allow and create Rule" : "Save selected";
     const result = await decideToolCall(context(directory, select, {
       confirm: async (title) => { confirmations.push(title); return true; },
     }), call, {

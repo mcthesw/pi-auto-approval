@@ -31,9 +31,31 @@ function serializedCall(call: ToolCall, pretty = false): string {
   }
 }
 
-function previewCall(call: ToolCall): string {
-  const value = serializedCall(call);
+function boundedPreview(value: string): string {
   return value.length > 500 ? `${value.slice(0, 482)}…[truncated]` : value;
+}
+
+function previewCall(call: ToolCall): string {
+  return boundedPreview(serializedCall(call));
+}
+
+function previewCallInput(call: ToolCall): string {
+  try {
+    if (call.input && typeof call.input === "object" && !Array.isArray(call.input)) {
+      const fields = Object.entries(call.input).map(([key, value]) => {
+        const rendered = typeof value === "string" ? value : JSON.stringify(value);
+        return `${key}: ${rendered ?? String(value)}`;
+      });
+      if (fields.length) return boundedPreview(fields.join(" · "));
+    }
+    return boundedPreview(JSON.stringify(call.input) ?? String(call.input));
+  } catch {
+    return "[unserializable input]";
+  }
+}
+
+function proposalSummary(proposal: ReviewRuleSuggestion): string {
+  return `${proposal.scope === "global" ? "GLOBAL" : "Project"} · ${matcherSummary(proposal.matcher)}`;
 }
 
 async function showFullCall(ctx: ExtensionContext, call: ToolCall): Promise<void> {
@@ -72,7 +94,9 @@ async function customConfirmation(ctx: ExtensionContext, request: UserConfirmati
     new ApprovalConfirmationComponent(tui, theme, done, {
       title: "Tool approval required",
       reason: request.reason,
-      callSummary: previewCall(request.call),
+      toolName: request.call.name,
+      callSummary: previewCallInput(request.call),
+      ruleSummaries: request.proposals.map(proposalSummary),
     }),
   );
   return result ?? { kind: "cancelled" };
@@ -81,12 +105,12 @@ async function customConfirmation(ctx: ExtensionContext, request: UserConfirmati
 async function standardConfirmation(ctx: ExtensionContext, request: UserConfirmationRequest): Promise<ConfirmationResult> {
   const selection = await ctx.ui.select(`Tool approval required\nReason: ${request.reason}\nTool Call: ${previewCall(request.call)}`, [
     "Allow once",
-    "Allow with Rule",
+    "Allow and create Rule",
     "Deny",
     "View full Tool Call",
   ]);
   if (selection === "Allow once") return { kind: "allow_once" };
-  if (selection === "Allow with Rule") return { kind: "allow_with_rule" };
+  if (selection === "Allow and create Rule") return { kind: "review_rules" };
   if (selection === "Deny") {
     const feedback = (await ctx.ui.input("Optional feedback for the Main Agent"))?.trim();
     return { kind: "deny", ...(feedback ? { feedback } : {}) };
@@ -203,7 +227,10 @@ export async function confirmToolCall(
       await showFullCall(ctx, request.call);
       continue;
     }
-    if (result.kind !== "allow_with_rule") return result;
+    if (result.kind === "allow_with_rule") {
+      return { kind: "always", rules: request.proposals.map((proposal) => structuredClone(proposal)) };
+    }
+    if (result.kind !== "review_rules") return result;
     const rules = await reviewProposals(ctx, request);
     if (rules) return { kind: "always", rules };
   }

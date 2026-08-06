@@ -55,10 +55,10 @@ Compound Bash calls are resolved segment by segment. Unresolved or conservativel
 A Tool Call requiring confirmation offers:
 
 - **Allow once**;
-- **Allow with Rule**;
+- **Allow and create Rule**;
 - **Deny**, with optional feedback for the Main Agent.
 
-`Allow with Rule` opens a Review Rules list. All proposed Rules start selected; Suggestions start unselected.
+Selecting `Allow and create Rule` previews up to three proposed Rules inline. Press Enter to allow the Tool Call and save the visible Rules, or `E` to review and edit them first. More than three proposed Rules always open the Review Rules list. All proposed Rules start selected; Suggestions start unselected.
 
 ```text
 ↑/↓  move
@@ -68,7 +68,7 @@ Enter save
 Esc   back
 ```
 
-Rule editing uses one screen for action, scope, match type, constraints, and advanced JSON. Use `←/→` to change discrete fields quickly. Tool Call approval also provides `V` to inspect the full call before deciding.
+Rule editing uses one screen for action, scope, match type, constraints, and advanced JSON. Use `←/→` to change discrete fields quickly. Tool Call approval provides `V` to inspect the full call before deciding; Escape blocks the pending call.
 
 ## Storage and security
 

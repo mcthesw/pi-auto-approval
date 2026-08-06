@@ -5,6 +5,7 @@ import { singleLine } from "../ui/text.ts";
 export type ConfirmationResult =
   | { kind: "allow_once" }
   | { kind: "allow_with_rule" }
+  | { kind: "review_rules" }
   | { kind: "deny"; feedback?: string }
   | { kind: "view_call" }
   | { kind: "cancelled" };
@@ -14,8 +15,12 @@ type Theme = ExtensionContext["ui"]["theme"];
 type ConfirmationComponentOptions = {
   title: string;
   reason: string;
+  toolName: string;
   callSummary: string;
+  ruleSummaries: readonly string[];
 };
+
+const MAX_INLINE_RULES = 3;
 
 function boundedText(text: string, width: number, maxLines: number): string[] {
   const normalized = singleLine(text);
@@ -25,6 +30,11 @@ function boundedText(text: string, width: number, maxLines: number): string[] {
     lines[lines.length - 1] = truncateToWidth(`${lines[lines.length - 1]}…`, width);
   }
   return lines.map((line) => truncateToWidth(line, width));
+}
+
+function indentedText(text: string, width: number, maxLines: number): string[] {
+  const contentWidth = Math.max(1, width - 4);
+  return boundedText(text, contentWidth, maxLines).map((line) => truncateToWidth(`    ${line}`, width));
 }
 
 export class ApprovalConfirmationComponent implements Component, Focusable {
@@ -76,6 +86,10 @@ export class ApprovalConfirmationComponent implements Component, Focusable {
       this.done({ kind: "view_call" });
       return;
     }
+    if (this.selected === 1 && data.toLowerCase() === "e") {
+      this.done({ kind: "review_rules" });
+      return;
+    }
     if (matchesKey(data, Key.up)) {
       this.move(-1);
       return;
@@ -86,8 +100,9 @@ export class ApprovalConfirmationComponent implements Component, Focusable {
     }
     if (matchesKey(data, Key.enter)) {
       if (this.selected === 0) this.done({ kind: "allow_once" });
-      else if (this.selected === 1) this.done({ kind: "allow_with_rule" });
-      else {
+      else if (this.selected === 1) {
+        this.done({ kind: this.options.ruleSummaries.length > MAX_INLINE_RULES ? "review_rules" : "allow_with_rule" });
+      } else {
         const feedback = this.feedbackInput.getValue().trim();
         this.done({ kind: "deny", ...(feedback ? { feedback } : {}) });
       }
@@ -104,17 +119,45 @@ export class ApprovalConfirmationComponent implements Component, Focusable {
       const text = this.selected === index ? this.theme.fg("accent", label) : label;
       return truncateToWidth(`${marker} ${text}`, safeWidth);
     };
+    const detail = (text: string) => this.theme.fg("dim", truncateToWidth(`    ${text}`, safeWidth));
+    const toolHeading = `${this.theme.fg("muted", "Tool Call")} · ${this.theme.bold(this.theme.fg("accent", singleLine(this.options.toolName)))}`;
     const lines = [
       this.theme.bold(truncateToWidth(singleLine(this.options.title), safeWidth)),
-      this.theme.fg("muted", truncateToWidth("Reason", safeWidth)),
-      ...boundedText(this.options.reason, safeWidth, 2).map((value) => this.theme.fg("muted", value)),
-      this.theme.fg("muted", truncateToWidth("Tool Call", safeWidth)),
-      ...boundedText(this.options.callSummary, safeWidth, 2).map((value) => this.theme.fg("muted", value)),
+      "",
+      truncateToWidth(toolHeading, safeWidth),
+      ...indentedText(this.options.callSummary, safeWidth, 4),
+      this.theme.fg("dim", truncateToWidth("    V  View full details", safeWidth)),
+      "",
+      this.theme.fg("muted", truncateToWidth("Why approval is needed", safeWidth)),
+      ...indentedText(this.options.reason, safeWidth, 3),
       "",
       line(0, "Allow once"),
-      line(1, "Allow with Rule"),
-      line(2, "Deny"),
+      detail("Run only this Tool Call"),
+      line(1, "Allow and create Rule"),
+      detail("Save permission for matching future calls"),
     ];
+    if (this.selected === 1) {
+      for (const summary of this.options.ruleSummaries.slice(0, MAX_INLINE_RULES)) {
+        const prefix = this.theme.fg("success", "[x]");
+        const summaryLines = boundedText(summary, Math.max(1, safeWidth - 8), 2);
+        summaryLines.forEach((value, index) => {
+          lines.push(truncateToWidth(`${index === 0 ? `    ${prefix} ` : "        "}${value}`, safeWidth));
+        });
+      }
+      if (this.options.ruleSummaries.length > MAX_INLINE_RULES) {
+        lines.push(this.theme.fg("warning", truncateToWidth(
+          `    … ${this.options.ruleSummaries.length - MAX_INLINE_RULES} more Rules require review`,
+          safeWidth,
+        )));
+      }
+      lines.push(detail(
+        this.options.ruleSummaries.length > MAX_INLINE_RULES
+          ? `Enter review ${this.options.ruleSummaries.length} Rules`
+          : "Enter allow & save",
+      ));
+      lines.push(detail("E review/edit"));
+    }
+    lines.push(line(2, "Deny"), detail("Block this call; feedback is optional"));
     if (this.selected === 2) {
       const nestedWidth = Math.max(1, safeWidth - 4);
       lines.push(this.theme.fg("dim", truncateToWidth("    Optional feedback for the Main Agent", safeWidth)));
@@ -123,7 +166,7 @@ export class ApprovalConfirmationComponent implements Component, Focusable {
     lines.push(
       "",
       this.theme.fg("dim", truncateToWidth("↑/↓ choose • Enter confirm", safeWidth)),
-      this.theme.fg("dim", truncateToWidth("V full call • Esc cancel", safeWidth)),
+      this.theme.fg("dim", truncateToWidth("V full details • Esc block", safeWidth)),
     );
     return lines;
   }
