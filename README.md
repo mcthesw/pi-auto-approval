@@ -51,7 +51,7 @@ Compound Bash calls are resolved segment by segment. Unresolved or conservativel
 - **Rules** — create, edit, or delete Project and Global Rules;
 - **Suggestions** — review Rules proposed from recent approval friction;
 - **Reviewer** — choose the explicit model and thinking level;
-- **Usage display** — choose Detailed token usage, Brief estimated cost, or Off for each Reviewer/Advisor run.
+- **Usage display** — choose Detailed token usage, Brief estimated cost, or Off for each Reviewer/Advisor run. In the TUI settings menu, highlight this row and use ←/→ to change it.
 
 A Tool Call requiring confirmation offers:
 

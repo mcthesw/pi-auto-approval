@@ -15,6 +15,7 @@ import { openRuleAdvisor } from "./advisor.ts";
 import { actionLabel, editRule, matcherSummary } from "./rule-editor.ts";
 import { confirmRuleConflicts } from "./rule-conflicts.ts";
 import { RuleListComponent, type RuleListResult } from "./rule-list-component.ts";
+import { SettingsMenuComponent, type SettingsMenuAction } from "./settings-menu-component.ts";
 import { singleLine } from "./text.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -337,16 +338,39 @@ export async function openAutoApprovalSettings(ctx: ExtensionContext, dependenci
       if (!(await repairConfig(ctx, dependencies.store, loaded.error))) return;
       continue;
     }
-    const selected = await ctx.ui.select("Pi Auto Approval", [
-      "Rules",
-      "Suggestions",
-      "Reviewer",
-      `Usage display: ${usageDisplayLabel(loaded.config.usageDisplay)}`,
-    ]);
-    if (!selected) return;
-    if (selected === "Rules") await manageRules(ctx, dependencies);
-    else if (selected === "Reviewer") await manageReviewer(ctx, dependencies);
-    else if (selected.startsWith("Usage display:")) await manageUsageDisplay(ctx, dependencies);
+
+    let action: SettingsMenuAction | "usage" | undefined;
+    if (ctx.mode === "tui") {
+      action = await ctx.ui.custom<SettingsMenuAction | undefined>((_tui, theme, _keybindings, done) => new SettingsMenuComponent(
+        theme,
+        {
+          usageDisplay: loaded.config.usageDisplay,
+          onUsageDisplayChange: (value) => mutate(ctx, dependencies.store, (next) => { next.usageDisplay = value; }),
+        },
+        done,
+      ));
+    } else {
+      const selected = await ctx.ui.select("Pi Auto Approval", [
+        "Rules",
+        "Suggestions",
+        "Reviewer",
+        `Usage display: ${usageDisplayLabel(loaded.config.usageDisplay)}`,
+      ]);
+      if (!selected) return;
+      action = selected === "Rules" ? "rules"
+        : selected === "Suggestions" ? "suggestions"
+          : selected === "Reviewer" ? "reviewer"
+            : selected.startsWith("Usage display:") ? "usage"
+              : undefined;
+    }
+
+    if (!action) return;
+    if (action === "usage") {
+      await manageUsageDisplay(ctx, dependencies);
+      continue;
+    }
+    if (action === "rules") await manageRules(ctx, dependencies);
+    else if (action === "reviewer") await manageReviewer(ctx, dependencies);
     else if (!dependencies.history || !dependencies.projectRoot) ctx.ui.notify("Rule Advisor runtime unavailable", "warning");
     else await openRuleAdvisor(ctx, {
       store: dependencies.store,

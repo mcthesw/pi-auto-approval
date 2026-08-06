@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { RuleEditorComponent } from "../src/ui/rule-editor-component.ts";
 import { RuleListComponent } from "../src/ui/rule-list-component.ts";
 import { RuleReviewComponent } from "../src/ui/rule-review-component.ts";
+import { SettingsMenuComponent } from "../src/ui/settings-menu-component.ts";
 
 const theme = { fg: (_color, text) => text, bold: (text) => text, dim: (text) => text };
 const tui = { requestRender() {} };
@@ -14,6 +15,30 @@ function bounded(component, width) {
   assert.ok(lines.every((line) => visibleWidth(line) <= width));
   return lines;
 }
+
+test("Settings menu changes Usage display with left and right arrows", async () => {
+  const changes = [];
+  let result;
+  const menu = new SettingsMenuComponent(theme, {
+    usageDisplay: "brief",
+    onUsageDisplayChange: async (value) => {
+      changes.push(value);
+      return true;
+    },
+  }, (action) => { result = action; });
+
+  menu.handleInput("\x1b[B");
+  menu.handleInput("\x1b[B");
+  menu.handleInput("\x1b[B");
+  menu.handleInput("\x1b[D");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(changes, ["detailed"]);
+  assert.ok(bounded(menu, 48).some((line) => line.includes("Detailed")));
+
+  menu.handleInput("\x1b[A");
+  menu.handleInput("\r");
+  assert.equal(result, "reviewer");
+});
 
 test("Rule Editor uses arrows for fields, Enter for actions, and ignores Space", () => {
   let result;
