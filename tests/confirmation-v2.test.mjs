@@ -30,8 +30,9 @@ test("confirmation renders bounded reason and Tool Call summaries", () => {
   assert.ok(lines.every((line) => !line.includes("\n") && !line.includes("\r")));
   assert.ok(lines.every((line) => visibleWidth(line) <= 28));
   assert.ok(lines.some((line) => line.includes("Allow and create Rule")));
-  assert.ok(lines.some((line) => line.includes("V  View full details")));
+  assert.ok(lines.some((line) => line.includes("V details")));
   assert.ok(lines.some((line) => line.includes("Why approval is needed")));
+  assert.ok(!lines.some((line) => line.includes("Run only this Tool Call")));
   assert.ok(!lines.some((line) => line.includes("Optional feedback")));
 });
 
@@ -42,8 +43,13 @@ test("confirmation offers allow once, Rule review, denial feedback, and full cal
   assert.deepEqual(result, { kind: "allow_once" });
 
   const withRule = component((value) => { result = value; });
+  assert.ok(!withRule.render(80).some((line) => line.includes("E edit")));
   withRule.handleInput("\x1b[B");
-  assert.ok(withRule.render(80).some((line) => line.includes("Project · Bash(cargo fmt *)")));
+  const ruleLines = withRule.render(80);
+  assert.ok(ruleLines.some((line) => line.includes("Project · Bash(cargo fmt *)")));
+  assert.ok(ruleLines.some((line) => line.includes("E edit • V details • Esc block")));
+  assert.ok(!ruleLines.some((line) => line.includes("[x]")));
+  assert.ok(!ruleLines.some((line) => line.includes("Enter allow & save")));
   withRule.handleInput("\r");
   assert.deepEqual(result, { kind: "allow_with_rule" });
 
@@ -82,7 +88,7 @@ test("more than three proposed Rules require review before saving", () => {
     ruleSummaries: Array.from({ length: 4 }, (_, index) => `Project · Bash(command ${index} *)`),
   });
   view.handleInput("\x1b[B");
-  assert.ok(view.render(80).some((line) => line.includes("1 more Rules require review")));
+  assert.ok(view.render(80).some((line) => line.includes("+1 more · Enter reviews all")));
   const narrow = view.render(32);
   assert.ok(narrow.some((line) => line.includes("command 0")));
   assert.ok(narrow.some((line) => line.includes("command 1")));

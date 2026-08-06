@@ -119,45 +119,34 @@ export class ApprovalConfirmationComponent implements Component, Focusable {
       const text = this.selected === index ? this.theme.fg("accent", label) : label;
       return truncateToWidth(`${marker} ${text}`, safeWidth);
     };
-    const detail = (text: string) => this.theme.fg("dim", truncateToWidth(`    ${text}`, safeWidth));
     const toolHeading = `${this.theme.fg("muted", "Tool Call")} · ${this.theme.bold(this.theme.fg("accent", singleLine(this.options.toolName)))}`;
     const lines = [
       this.theme.bold(truncateToWidth(singleLine(this.options.title), safeWidth)),
       "",
       truncateToWidth(toolHeading, safeWidth),
       ...indentedText(this.options.callSummary, safeWidth, 4),
-      this.theme.fg("dim", truncateToWidth("    V  View full details", safeWidth)),
       "",
       this.theme.fg("muted", truncateToWidth("Why approval is needed", safeWidth)),
       ...indentedText(this.options.reason, safeWidth, 3),
       "",
       line(0, "Allow once"),
-      detail("Run only this Tool Call"),
       line(1, "Allow and create Rule"),
-      detail("Save permission for matching future calls"),
     ];
     if (this.selected === 1) {
       for (const summary of this.options.ruleSummaries.slice(0, MAX_INLINE_RULES)) {
-        const prefix = this.theme.fg("success", "[x]");
-        const summaryLines = boundedText(summary, Math.max(1, safeWidth - 8), 2);
-        summaryLines.forEach((value, index) => {
-          lines.push(truncateToWidth(`${index === 0 ? `    ${prefix} ` : "        "}${value}`, safeWidth));
+        const summaryLines = boundedText(summary, Math.max(1, safeWidth - 4), 2);
+        summaryLines.forEach((value) => {
+          lines.push(truncateToWidth(`    ${value}`, safeWidth));
         });
       }
       if (this.options.ruleSummaries.length > MAX_INLINE_RULES) {
         lines.push(this.theme.fg("warning", truncateToWidth(
-          `    … ${this.options.ruleSummaries.length - MAX_INLINE_RULES} more Rules require review`,
+          `    … +${this.options.ruleSummaries.length - MAX_INLINE_RULES} more · Enter reviews all`,
           safeWidth,
         )));
       }
-      lines.push(detail(
-        this.options.ruleSummaries.length > MAX_INLINE_RULES
-          ? `Enter review ${this.options.ruleSummaries.length} Rules`
-          : "Enter allow & save",
-      ));
-      lines.push(detail("E review/edit"));
     }
-    lines.push(line(2, "Deny"), detail("Block this call; feedback is optional"));
+    lines.push(line(2, "Deny"));
     if (this.selected === 2) {
       const nestedWidth = Math.max(1, safeWidth - 4);
       lines.push(this.theme.fg("dim", truncateToWidth("    Optional feedback for the Main Agent", safeWidth)));
@@ -166,7 +155,10 @@ export class ApprovalConfirmationComponent implements Component, Focusable {
     lines.push(
       "",
       this.theme.fg("dim", truncateToWidth("↑/↓ choose • Enter confirm", safeWidth)),
-      this.theme.fg("dim", truncateToWidth("V full details • Esc block", safeWidth)),
+      this.theme.fg("dim", truncateToWidth(
+        this.selected === 1 ? "E edit • V details • Esc block" : "V details • Esc block",
+        safeWidth,
+      )),
     );
     return lines;
   }
