@@ -5,7 +5,7 @@ import type { AutoApprovalConfigStore } from "../config/store.ts";
 import type { FrictionHistoryStore } from "../friction/store.ts";
 import type { RuleAdvisor, AdvisorSuggestion } from "../advisor/advisor.ts";
 import type { AdvisorSkillSummary, AdvisorToolMetadata } from "../advisor/prompt.ts";
-import { validateToolMatcher, type RuleScope } from "../matchers.ts";
+import { isStandardToolName, validateToolMatcher, type RuleScope } from "../matchers.ts";
 import { findMatchingRule, upsertRestrictiveRule } from "../rules.ts";
 import { confirmRuleConflicts, type RuleConflict } from "./rule-conflicts.ts";
 import { RuleReviewComponent, type RuleReviewResult } from "./rule-review-component.ts";
@@ -78,7 +78,7 @@ async function editCandidate(
     initialAction: candidate.action,
     initial: candidate.matcher,
     initialScope: candidate.scope,
-    toolSource: tool?.source,
+    toolSource: isStandardToolName(candidate.matcher.tool) ? undefined : tool?.source,
     exactInput: firstRecord?.input,
     contextLines: candidateContext(candidate, records),
   });

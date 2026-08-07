@@ -184,7 +184,8 @@ export async function matchesToolCall(
 
 export function exactMatcherFor(call: ToolCall, source?: ToolSourceIdentity): ToolMatcher | undefined {
   if (!isJsonValue(call.input)) return undefined;
-  return { tool: call.name, ...(source ? { source: structuredClone(source) } : {}), input: { kind: "exact", value: structuredClone(call.input) } };
+  const boundSource = isStandardToolName(call.name) ? undefined : source;
+  return { tool: call.name, ...(boundSource ? { source: structuredClone(boundSource) } : {}), input: { kind: "exact", value: structuredClone(call.input) } };
 }
 
 export function matcherKey(matcher: ToolMatcher): string {

@@ -89,6 +89,10 @@ test("matcher validation scopes path globs and source binding is respected", asy
   const projectAbsolute = { tool: "read", input: { kind: "fields", fields: { path: { kind: "pathGlob", pattern: path.resolve("src/**") } } } };
   assert.match(validateToolMatcher(projectAbsolute, { scope: "project" }), /project-relative/);
   assert.match(validateToolMatcher({ tool: "read", source: { source: "mcp", path: "other" }, input: { kind: "any" } }), /standard tools cannot be source-bound/);
+  assert.equal(exactMatcherFor(
+    { id: "read-1", name: "read", input: { path: "README.md" } },
+    { source: "sdk", path: "<sdk:read>" },
+  ).source, undefined);
   const matcher = { tool: "context7_query-docs", source: { source: "mcp", path: "context7" }, input: { kind: "any" } };
   const context = { resolvePath: async () => ({ inside: true, relative: "x", canonical: "x" }), tokenizeBash: () => undefined, source: { source: "mcp", path: "context7" } };
   assert.equal(await matchesToolCall(matcher, { id: "1", name: "context7_query-docs", input: {} }, context), true);

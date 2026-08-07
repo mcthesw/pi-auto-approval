@@ -19,6 +19,71 @@ function context(select, notifications) {
   };
 }
 
+test("Rule Advisor editing does not source-bind standard tools", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pi-auto-advisor-standard-"));
+  try {
+    const projectKey = path.join(directory, "project");
+    const store = new AutoApprovalConfigStore(path.join(directory, "config.json"));
+    const history = new FrictionHistoryStore(path.join(directory, "history.json"));
+    await store.replace({
+      version: 2,
+      reviewer: { provider: "test", modelId: "reviewer", thinkingLevel: "low" },
+      usageDisplay: "off",
+      globalRules: [],
+      projects: { [projectKey]: { rules: [] } },
+    });
+    await history.append(projectKey, {
+      id: "record-edit",
+      timestamp: new Date().toISOString(),
+      tool: { name: "edit", source: { source: "sdk", path: "<sdk:edit>" } },
+      input: { path: "src/lib.ts", edits: [] },
+      userChoice: "allow_once",
+    });
+
+    const advisor = {
+      suggest: async () => [{
+        action: "allow",
+        matcher: { tool: "edit", input: { kind: "exact", value: { path: "src/lib.ts", edits: [] } } },
+        scope: "project",
+        rationale: "Repeated project edit.",
+        supportingRecordIds: ["record-edit"],
+        replacesRuleIds: [],
+        stats: { calls: 1, userConfirmations: 1, automatedReviews: 0 },
+      }],
+    };
+    let step = 0;
+    const notifications = [];
+    const select = async (_title, options) => {
+      step += 1;
+      if (step === 1) return options[0];
+      if (step === 2) return "View / edit";
+      if (step === 3) return "Save";
+      if (step === 4) return "Save selected";
+      throw new Error(`Unexpected selection step ${step}`);
+    };
+
+    await openRuleAdvisor(context(select, notifications), {
+      store,
+      history,
+      advisor,
+      projectKey,
+      projectRoot: projectKey,
+      tools: [{ name: "edit", source: { source: "sdk", path: "<sdk:edit>" } }],
+      skills: [],
+    });
+
+    const loaded = await store.read();
+    assert.equal(loaded.ok, true);
+    const saved = loaded.config.projects[projectKey].rules;
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].matcher.tool, "edit");
+    assert.equal(saved[0].matcher.source, undefined);
+    assert.equal(notifications.some((item) => item.message.includes("standard tools cannot be source-bound")), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Rule Advisor places usage in Suggestions and empty-result notifications", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "pi-auto-advisor-ui-"));
   try {

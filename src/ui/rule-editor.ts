@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FieldMatcher, JsonValue, RuleAction, ToolMatcher, ToolSourceIdentity } from "../domain.ts";
 import { parseToolMatcher } from "../config/schema.ts";
-import { isJsonValue, validateToolMatcher, type RuleScope } from "../matchers.ts";
+import { isJsonValue, isStandardToolName, validateToolMatcher, type RuleScope } from "../matchers.ts";
 import { tokenizeSingleCommand } from "../policy/bash.ts";
 import { RuleEditorComponent, type RuleEditorResult, type RuleMatchKind } from "./rule-editor-component.ts";
 import { singleLine } from "./text.ts";
@@ -232,7 +232,9 @@ export async function editRule(
 ): Promise<EditedRule | undefined> {
   let action = options.initialAction;
   let matcher = structuredClone(options.initial);
-  if (options.toolSource && !matcher.source) matcher.source = structuredClone(options.toolSource);
+  const toolSource = isStandardToolName(matcher.tool) ? undefined : options.toolSource;
+  if (isStandardToolName(matcher.tool)) delete matcher.source;
+  else if (toolSource && !matcher.source) matcher.source = structuredClone(toolSource);
   let scope: RuleScope = options.initialScope ?? "project";
   for (;;) {
     const selected = await selectEditorAction(ctx, { action, matcher, scope }, options);
@@ -274,7 +276,7 @@ export async function editRule(
         try {
           const parsed = parseToolMatcher(JSON.parse(edited), "matcher", scope);
           if (parsed.tool !== options.initial.tool) throw new Error("Tool name cannot be changed here");
-          matcher = options.toolSource ? { ...parsed, source: structuredClone(options.toolSource) } : parsed;
+          matcher = toolSource ? { ...parsed, source: structuredClone(toolSource) } : parsed;
           break;
         } catch (error) {
           ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
